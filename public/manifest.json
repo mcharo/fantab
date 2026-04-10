@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "FantTab",
+  "description": "Custom tab behaviors: rename tabs, pin URLs, and organize with groups",
+  "version": "0.1.0",
+  "permissions": ["tabs", "sidePanel", "storage", "favicon"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "FantTab"
+  }
+}
