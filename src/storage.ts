@@ -1,6 +1,6 @@
 import type { AppState, ManagedTab, TabGroup } from './types';
 
-const STORAGE_KEY = 'fantab_state';
+export const STORAGE_KEY = 'fantab_state';
 
 const DEFAULT_STATE: AppState = { tabs: [], groups: [] };
 

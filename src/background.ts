@@ -80,6 +80,11 @@ async function handleUnpinTab(id: string): Promise<AppState> {
   const tab = findTabById(state, id);
   if (tab?.tabId) {
     titleCache.delete(tab.tabId);
+    try {
+      await chrome.tabs.reload(tab.tabId);
+    } catch {
+      // Tab may have been closed
+    }
   }
   state = removeTab(state, id);
   await saveState(state);
@@ -268,11 +273,19 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.runtime.onStartup.addListener(async () => {
   let state = await loadState();
   const allTabs = await chrome.tabs.query({});
-  const tabIds = new Set(allTabs.map((t) => t.id));
+  const tabMap = new Map(allTabs.map((t) => [t.id, t]));
   let changed = false;
 
   for (const managedTab of state.tabs) {
-    if (managedTab.tabId !== null && !tabIds.has(managedTab.tabId)) {
+    if (managedTab.tabId === null) continue;
+
+    const chromeTab = tabMap.get(managedTab.tabId);
+    const urlMatches = chromeTab?.url
+      ? isAtHome(chromeTab.url, managedTab.homeUrl) ||
+        chromeTab.url === managedTab.currentUrl
+      : false;
+
+    if (!chromeTab || !urlMatches) {
       state = updateTab(state, managedTab.id, {
         tabId: null,
         currentUrl: null,

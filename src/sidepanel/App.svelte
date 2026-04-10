@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AppState } from '../types';
   import type { Message } from '../messaging';
+  import { STORAGE_KEY } from '../storage';
   import Header from './components/Header.svelte';
   import TabList from './components/TabList.svelte';
   import EmptyState from './components/EmptyState.svelte';
@@ -83,8 +84,8 @@
     const onStorageChanged = (changes: {
       [key: string]: chrome.storage.StorageChange;
     }) => {
-      if (changes.fantab_state?.newValue) {
-        state = changes.fantab_state.newValue;
+      if (changes[STORAGE_KEY]?.newValue) {
+        state = changes[STORAGE_KEY].newValue;
       }
     };
     chrome.storage.onChanged.addListener(onStorageChanged);
