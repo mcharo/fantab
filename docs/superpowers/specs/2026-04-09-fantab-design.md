@@ -24,6 +24,8 @@ interface ManagedTab {
   groupId: string | null;  // reference to TabGroup.id, or null for ungrouped
   tabId: number | null;    // Chrome tab ID, null when tab is closed
   faviconUrl: string;      // cached favicon URL of homeUrl
+  currentUrl: string | null;   // tab's current URL (null when closed)
+  currentTitle: string | null; // tab's current page title (null when closed)
   createdAt: number;       // timestamp for ordering
 }
 
@@ -63,15 +65,22 @@ User navigates to a page, opens the side panel, clicks "Pin this tab." The servi
 1. Reads the active tab's URL, title, and favicon
 2. Creates a `ManagedTab` with a new UUID, the URL as `homeUrl`, the page title as initial `customName`
 3. Saves to storage and broadcasts updated state
-4. Immediately applies the title prefix: `[customName] Original Title`
+4. Immediately sets the Chrome tab title to the `customName`
 
-### Title prefixing
+### Title format (Chrome tab strip)
 
-The service worker listens to `chrome.tabs.onUpdated`. When a managed tab's `title` changes (due to navigation, SPA route change, or page load), it re-applies the title as `[CustomName] Original Page Title`. A guard prevents infinite loops (skip update if title already starts with the prefix).
+- **At home URL:** `Custom Name`
+- **Navigated away:** `Custom Name - Page Title`
+
+The service worker listens to `chrome.tabs.onUpdated`. When a managed tab's URL or title changes, it:
+1. Updates `currentUrl` and `currentTitle` in storage
+2. Compares `currentUrl` to `homeUrl` (origin + pathname match, ignoring query/hash) to determine `isAtHome`
+3. Applies the appropriate title format to the Chrome tab
+4. A guard prevents infinite loops (skip update if the title already matches the expected format)
 
 ### Go Home
 
-Side panel's home button calls the service worker with `GO_HOME` + tab UUID. Service worker calls `chrome.tabs.update(tabId, { url: homeUrl })`.
+The favicon in the side panel tab row doubles as the "go home" button (see Side Panel UI). Clicking it sends `GO_HOME` + tab UUID to the service worker, which calls `chrome.tabs.update(tabId, { url: homeUrl })`.
 
 ### Tab closure detection
 
@@ -106,12 +115,18 @@ Click the custom name in the side panel to edit inline. On confirm, update `cust
 - Each group header: colored dot + group name (click to edit) + collapse toggle
 
 **Each managed tab row:**
-- Favicon image (from cached `faviconUrl`)
-- Custom name (click to edit inline)
-- Current URL truncated and dimmed (shows where the tab actually is vs. home)
-- Status: green dot = tab is open, gray = closed
-- Home button (house icon) -- navigate to pinned URL; disabled when already at home
-- Unpin button (x icon) -- removes tab from management entirely
+
+Layout: `[FAVICON] Custom Name` or `[FAVICON] Custom Name - Page Title`
+
+- **Favicon** (left side): Displays the site's favicon. Doubles as a contextual "go home" button:
+  - **When at home URL:** Static, non-interactive. Just a visual identifier.
+  - **When navigated away from home:** Becomes a button. On hover, it visually raises/highlights (elevated shadow, slight scale-up) to indicate it's clickable. The text to the right shifts up and a caption appears beneath it describing the action (e.g., "Return to pinned URL"). Clicking navigates the tab back to the home URL.
+  - **When tab is closed:** Static, dimmed.
+- **Title area** (right of favicon):
+  - Top line: custom name (click to edit inline). When away from home, appends ` - Page Title` in a dimmer weight.
+  - On favicon hover (when away from home): the title shifts upward and a small caption appears below (e.g., "Return to pinned URL"), matching the macOS media control interaction pattern.
+- **Status indicator:** Green dot = open, gray dot = closed.
+- **Unpin button** (x icon, on row hover) -- removes tab from management.
 
 **Group management:**
 - "+" button to create a new group (name + color picker)
