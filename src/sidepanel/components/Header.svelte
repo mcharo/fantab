@@ -1,57 +1,169 @@
 <script lang="ts">
   interface Props {
-    onPinTab: () => void;
-    isActiveTabPinned: boolean;
+    searchQuery: string;
+    searchOpen?: boolean;
+    onSearchChange: (query: string) => void;
+    onCreateTab: () => void;
+    onCreateGroup: () => void;
+    canCreateGroup: boolean;
   }
 
-  let { onPinTab, isActiveTabPinned }: Props = $props();
+  import Icon from './Icon.svelte';
+
+  let {
+    searchQuery,
+    searchOpen = $bindable(false),
+    onSearchChange,
+    onCreateTab,
+    onCreateGroup,
+    canCreateGroup,
+  }: Props = $props();
+
+  let searchInput: HTMLInputElement | undefined = $state(undefined);
+
+  const showSearch = $derived(searchOpen || searchQuery.trim().length > 0);
+
+  function toggleSearch() {
+    if (showSearch) {
+      searchOpen = false;
+      onSearchChange('');
+      return;
+    }
+
+    searchOpen = true;
+    requestAnimationFrame(() => searchInput?.focus());
+  }
+
 </script>
 
-<header class="header">
-  <h1 class="title">FantTab</h1>
-  <button
-    class="pin-btn"
-    onclick={onPinTab}
-    disabled={isActiveTabPinned}
-    title={isActiveTabPinned
-      ? 'This tab is already pinned'
-      : 'Pin the current tab'}
-  >
-    {isActiveTabPinned ? 'Pinned' : '+ Pin this tab'}
-  </button>
+<header class="header" class:floating={!showSearch} class:docked={showSearch}>
+  <div class="top-row">
+    <div class="actions">
+      <button
+        class="icon-btn"
+        class:active={showSearch}
+        onclick={toggleSearch}
+        title={showSearch ? 'Close search' : 'Search tabs'}
+      >
+        {#if showSearch}
+          <Icon name="x" size={17} />
+        {:else}
+          <Icon name="search" size={17} />
+        {/if}
+      </button>
+      <button
+        class="icon-btn"
+        onclick={onCreateGroup}
+        disabled={!canCreateGroup}
+        title="New group from active tab"
+      >
+        <Icon name="new-group" size={17} />
+      </button>
+      <button class="icon-btn" onclick={onCreateTab} title="New tab">
+        <Icon name="plus" size={18} />
+      </button>
+    </div>
+  </div>
+
+  {#if showSearch}
+    <input
+      bind:this={searchInput}
+      class="search"
+      type="search"
+      value={searchQuery}
+      placeholder="Search tabs"
+      oninput={(event) =>
+        onSearchChange((event.target as HTMLInputElement).value)}
+      onkeydown={(event) => {
+        if (event.key === 'Escape') {
+          event.stopPropagation();
+          searchOpen = false;
+          onSearchChange('');
+        }
+      }}
+    />
+  {/if}
 </header>
 
 <style>
   .header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 12px 16px;
-    border-bottom: 1px solid var(--border-color);
+    flex-direction: column;
+    gap: 8px;
+    padding: 6px 8px;
     flex-shrink: 0;
   }
 
-  .title {
-    font-size: 15px;
-    font-weight: 600;
+  /* Idle: float the buttons over the top-right corner so they reserve no
+     vertical space and the tab list starts at the very top. The empty area
+     lets clicks fall through to the content beneath. */
+  .header.floating {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    pointer-events: none;
   }
 
-  .pin-btn {
-    padding: 6px 12px;
+  .header.floating .actions {
+    pointer-events: auto;
+  }
+
+  /* Searching: dock as a normal band that pushes the list down, keeping the
+     search field and its results fully visible. */
+  .header.docked {
+    position: relative;
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .top-row {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+  }
+
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 28px;
+    width: 28px;
     border-radius: var(--radius-sm);
-    background: var(--accent-color);
-    color: #fff;
-    font-weight: 500;
-    font-size: 12px;
-    transition: background 0.15s;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
   }
 
-  .pin-btn:hover:not(:disabled) {
-    background: var(--accent-hover);
+  .icon-btn:hover,
+  .icon-btn.active {
+    background: var(--bg-hover);
   }
 
-  .pin-btn:disabled {
-    opacity: 0.5;
+  .icon-btn:disabled {
     cursor: default;
+    opacity: 0.35;
+  }
+
+  .search {
+    width: 100%;
+    height: 30px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    outline: none;
+    padding: 0 9px;
+  }
+
+  .search:focus {
+    border-color: var(--accent-color);
   }
 </style>

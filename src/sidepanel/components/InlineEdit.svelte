@@ -15,7 +15,8 @@
     if (!editing) editValue = value;
   });
 
-  function startEditing() {
+  function startEditing(event?: Event) {
+    event?.stopPropagation();
     editValue = value;
     editing = true;
     requestAnimationFrame(() => {
@@ -33,8 +34,15 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter') save();
-    if (e.key === 'Escape') editing = false;
+    if (e.key === 'Enter') {
+      e.stopPropagation();
+      if (editing) save();
+      else startEditing(e);
+    }
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      editing = false;
+    }
   }
 </script>
 
@@ -53,7 +61,7 @@
     title="Double-click to edit"
     role="button"
     tabindex="0"
-    onkeydown={(e) => e.key === 'Enter' && startEditing()}
+    onkeydown={handleKeydown}
   >
     {value}
   </span>
@@ -71,7 +79,7 @@
   }
 
   .inline-text {
-    cursor: text;
+    cursor: default;
     border-radius: var(--radius-sm);
     padding: 1px 4px;
     transition: background 0.15s;

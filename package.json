@@ -1,14 +1,16 @@
 {
   "name": "fantab",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite build --watch --mode development",
     "build": "vite build",
+    "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "icons": "./scripts/export-icons.sh"
   },
   "keywords": [],
   "author": "",

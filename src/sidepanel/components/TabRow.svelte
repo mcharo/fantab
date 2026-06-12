@@ -1,287 +1,469 @@
 <script lang="ts">
-  import type { ManagedTab, TabGroup } from '../../types';
-  import { isAtHome } from '../../lib/url';
+  import { getFaviconUrl } from '../../lib/url';
+  import type { PanelTab } from '../../types';
+  import Icon from './Icon.svelte';
   import InlineEdit from './InlineEdit.svelte';
 
+  type DropPosition = 'before' | 'after';
+  type DragPayload =
+    | { type: 'homePin'; homePinId: string }
+    | {
+        type: 'tab';
+        tabId: number;
+        sourceIndex?: number;
+        sourceWindowId?: number | null;
+      };
+
   interface Props {
-    tab: ManagedTab;
-    groups: TabGroup[];
-    onUnpin: (id: string) => void;
-    onRename: (id: string, name: string) => void;
-    onGoHome: (id: string) => void;
-    onReopen: (id: string) => void;
-    onMoveToGroup: (tabId: string, groupId: string | null) => void;
+    tab: PanelTab;
+    selected: boolean;
+    onActivate: (tab: PanelTab) => void;
+    onClose: (tabId: number) => void;
+    onRename: (tab: PanelTab, alias: string) => void;
+    onCreateHomePin: (tabId: number) => void;
+    onRemoveHomePin: (homePinId: string) => void;
+    onGoHome: (homePinId: string) => void;
+    onContextMenu: (tab: PanelTab, x: number, y: number) => void;
+    onTabDrop: (draggedTabId: number, targetIndex: number) => void;
+    onHomePinDrop: (
+      homePinId: string,
+      targetHomePinId: string,
+      position: DropPosition,
+    ) => void;
   }
 
-  let { tab, groups, onUnpin, onRename, onGoHome, onReopen, onMoveToGroup }: Props = $props();
+  let {
+    tab,
+    selected,
+    onActivate,
+    onClose,
+    onRename,
+    onCreateHomePin,
+    onRemoveHomePin,
+    onGoHome,
+    onContextMenu,
+    onTabDrop,
+    onHomePinDrop,
+  }: Props = $props();
 
-  const isOpen = $derived(tab.tabId !== null);
-  const atHome = $derived(isAtHome(tab.currentUrl, tab.homeUrl));
-  const canGoHome = $derived(isOpen && !atHome);
+  const canGoHome = $derived(tab.isHomePin && tab.isOpen && !tab.atHome);
+  const canClose = $derived(tab.isOpen && tab.tabId !== null);
+  const proxiedFaviconUrl = $derived(safeFaviconUrl(tab.url));
 
-  let faviconHovered = $state(false);
+  let faviconMode = $state<'direct' | 'proxy' | 'fallback'>('proxy');
+  let dropPosition = $state<DropPosition | null>(null);
 
-  function faviconSrc(): string {
-    if (tab.faviconUrl) return tab.faviconUrl;
+  const renderedFaviconUrl = $derived(
+    faviconMode === 'direct'
+      ? tab.faviconUrl
+      : faviconMode === 'proxy'
+        ? proxiedFaviconUrl
+        : '',
+  );
+
+  $effect(() => {
+    tab.key;
+    tab.faviconUrl;
+    tab.url;
+    faviconMode = tab.faviconUrl ? 'direct' : 'proxy';
+  });
+
+  function safeFaviconUrl(pageUrl: string): string {
+    if (!pageUrl) return '';
+
     try {
-      return `chrome-extension://${chrome.runtime.id}/_favicon/?pageUrl=${encodeURIComponent(tab.homeUrl)}&size=32`;
+      return getFaviconUrl(pageUrl);
     } catch {
       return '';
     }
   }
 
-  function handleFaviconClick() {
-    if (canGoHome) {
-      onGoHome(tab.id);
-    } else if (!isOpen) {
-      onReopen(tab.id);
+  function handleFaviconError() {
+    if (faviconMode === 'direct' && proxiedFaviconUrl) {
+      faviconMode = 'proxy';
+      return;
+    }
+
+    faviconMode = 'fallback';
+  }
+
+  function dragPayload(): string {
+    if (tab.isHomePin && tab.homePinId) {
+      return JSON.stringify({ type: 'homePin', homePinId: tab.homePinId });
+    }
+    return JSON.stringify({
+      type: 'tab',
+      tabId: tab.tabId,
+      sourceIndex: tab.index,
+      sourceWindowId: tab.windowId,
+    });
+  }
+
+  function rowDropPosition(event: DragEvent): DropPosition {
+    const row = event.currentTarget as HTMLElement;
+    const rect = row.getBoundingClientRect();
+    return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+  }
+
+  function targetTabIndex(payload: Extract<DragPayload, { type: 'tab' }>): number {
+    const position = dropPosition ?? 'before';
+    let insertIndex = tab.index + (position === 'after' ? 1 : 0);
+
+    if (
+      payload.sourceWindowId === tab.windowId &&
+      typeof payload.sourceIndex === 'number' &&
+      payload.sourceIndex < insertIndex
+    ) {
+      insertIndex -= 1;
+    }
+
+    return Math.max(0, insertIndex);
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    dropPosition = rowDropPosition(event);
+  }
+
+  function handleDragLeave(event: DragEvent) {
+    const row = event.currentTarget as HTMLElement;
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && row.contains(nextTarget)) return;
+    dropPosition = null;
+  }
+
+  function handleDrop(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const position = dropPosition ?? rowDropPosition(event);
+    dropPosition = null;
+
+    const payload = parseDragPayload(event);
+    if (!payload) return;
+
+    if (
+      payload.type === 'homePin' &&
+      tab.isHomePin &&
+      tab.homePinId &&
+      payload.homePinId !== tab.homePinId
+    ) {
+      onHomePinDrop(payload.homePinId, tab.homePinId, position);
+    }
+
+    if (payload.type === 'tab' && tab.tabId !== null && payload.tabId !== tab.tabId) {
+      onTabDrop(payload.tabId, targetTabIndex(payload));
     }
   }
 
-  function focusTab() {
-    if (tab.tabId) {
-      chrome.tabs.update(tab.tabId, { active: true });
+  function handleRowClick(event: MouseEvent) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('.tools')) return;
+    if (event.altKey) {
+      openContextMenu(event);
+      return;
     }
+    onActivate(tab);
+  }
+
+  function openContextMenu(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    onContextMenu(tab, event.clientX, event.clientY);
+  }
+
+  function handleRowKeydown(event: KeyboardEvent) {
+    // Only handle keys aimed at the row itself; ignore events bubbling up from
+    // the inline-rename input, otherwise Space/Enter get hijacked while typing.
+    if (event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    event.stopPropagation();
+    onActivate(tab);
+  }
+
+  function reloadPinnedUrl(event: MouseEvent) {
+    event.stopPropagation();
+    if (!tab.homePinId) return;
+
+    if (tab.isOpen) onGoHome(tab.homePinId);
+    else onActivate(tab);
+  }
+
+  function parseDragPayload(event: DragEvent): DragPayload | null {
+    try {
+      const payload = JSON.parse(event.dataTransfer?.getData('text/plain') ?? '');
+      if (payload.type === 'homePin' && typeof payload.homePinId === 'string') {
+        return payload;
+      }
+      if (payload.type === 'tab' && typeof payload.tabId === 'number') {
+        return {
+          type: 'tab',
+          tabId: payload.tabId,
+          sourceIndex:
+            typeof payload.sourceIndex === 'number'
+              ? payload.sourceIndex
+              : undefined,
+          sourceWindowId:
+            typeof payload.sourceWindowId === 'number'
+              ? payload.sourceWindowId
+              : null,
+        };
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
   }
 </script>
 
-<div class="tab-row" class:closed={!isOpen}>
+<div
+  class="tab-row"
+  class:selected
+  class:active={tab.isActive}
+  class:closed={!tab.isOpen}
+  class:dropBefore={dropPosition === 'before'}
+  class:dropAfter={dropPosition === 'after'}
+  draggable={tab.isOpen || tab.isHomePin}
+  ondragstart={(event) => {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.setData('text/plain', dragPayload());
+    event.dataTransfer.setData('fantab/key', tab.key);
+    event.dataTransfer.effectAllowed = 'move';
+  }}
+  ondragend={() => (dropPosition = null)}
+  ondragover={handleDragOver}
+  ondragleave={handleDragLeave}
+  ondrop={handleDrop}
+  onclick={handleRowClick}
+  oncontextmenu={openContextMenu}
+  onkeydown={handleRowKeydown}
+  role="button"
+  tabindex="0"
+>
   <button
     class="favicon-btn"
-    class:can-go-home={canGoHome}
-    class:is-closed={!isOpen}
-    onclick={handleFaviconClick}
-    onmouseenter={() => {
-      if (canGoHome || !isOpen) faviconHovered = true;
+    class:home-action={canGoHome}
+    onclick={(event) => {
+      event.stopPropagation();
+      if (canGoHome && tab.homePinId) onGoHome(tab.homePinId);
+      else onActivate(tab);
     }}
-    onmouseleave={() => (faviconHovered = false)}
-    disabled={isOpen && atHome}
-    title={canGoHome ? 'Return to pinned URL' : !isOpen ? 'Reopen tab' : ''}
+    title={canGoHome ? 'Return to home URL' : tab.isOpen ? 'Activate tab' : 'Reopen home pin'}
   >
-    <img
-      class="favicon-img"
-      src={faviconSrc()}
-      alt=""
-      width="20"
-      height="20"
-      onerror={(e) => {
-        (e.target as HTMLImageElement).style.display = 'none';
-      }}
-    />
+    {#if renderedFaviconUrl}
+      <img
+        class="favicon"
+        src={renderedFaviconUrl}
+        alt=""
+        width="18"
+        height="18"
+        onerror={handleFaviconError}
+      />
+    {:else if tab.isHomePin}
+      <span class="fallback-pin"><Icon name="pin" size={15} /></span>
+    {:else}
+      <span class="fallback-icon">•</span>
+    {/if}
   </button>
 
-  <div
-    class="title-area"
-    class:shifted={faviconHovered}
-    role="button"
-    tabindex="0"
-    onclick={focusTab}
-    onkeydown={(e) => e.key === 'Enter' && focusTab()}
-  >
+  <div class="main">
     <div class="title-line">
       <InlineEdit
-        value={tab.customName}
-        onSave={(name) => onRename(tab.id, name)}
+        value={tab.displayName}
+        onSave={(alias) => onRename(tab, alias)}
         className="tab-name"
       />
-      {#if !atHome && tab.currentTitle && isOpen}
-        <span class="page-title"> - {tab.currentTitle}</span>
-      {/if}
     </div>
-    {#if faviconHovered && canGoHome}
-      <div class="caption">Return to pinned URL</div>
-    {:else if faviconHovered && !isOpen}
-      <div class="caption">Reopen tab</div>
-    {/if}
   </div>
 
-  <div class="actions">
-    <span class="status-dot" class:open={isOpen}></span>
+  <div class="tools">
+    {#if tab.isAudible}
+      <span class="audio-dot" title={tab.isMuted ? 'Muted' : 'Audible'}></span>
+    {/if}
 
-    <select
-      class="group-select"
-      value={tab.groupId ?? ''}
-      onchange={(e) => {
-        const val = (e.target as HTMLSelectElement).value;
-        onMoveToGroup(tab.id, val || null);
-      }}
-      title="Assign to group"
-    >
-      <option value="">No group</option>
-      {#each groups as group}
-        <option value={group.id}>{group.name}</option>
-      {/each}
-    </select>
+    {#if tab.isHomePin && tab.homePinId}
+      <button
+        class="tool-btn"
+        onclick={reloadPinnedUrl}
+        title={tab.isOpen ? 'Reload pinned URL' : 'Open pinned URL'}
+      >
+        <Icon name="refresh" size={14} />
+      </button>
+      <button
+        class="tool-btn"
+        onclick={(event) => {
+          event.stopPropagation();
+          onRemoveHomePin(tab.homePinId!);
+        }}
+        title="Remove home pin"
+      >
+        <Icon name="pin-off" size={15} />
+      </button>
+    {:else if tab.tabId !== null}
+      <button
+        class="tool-btn"
+        onclick={(event) => {
+          event.stopPropagation();
+          onCreateHomePin(tab.tabId!);
+        }}
+        title="Pin as home"
+      >
+        <Icon name="pin" size={15} />
+      </button>
+    {/if}
 
-    <button class="unpin-btn" onclick={() => onUnpin(tab.id)} title="Unpin tab">
-      ×
-    </button>
+    {#if canClose}
+      <button
+        class="tool-btn"
+        onclick={(event) => {
+          event.stopPropagation();
+          onClose(tab.tabId!);
+        }}
+        title="Close tab"
+      >
+        <Icon name="x" size={15} />
+      </button>
+    {/if}
   </div>
 </div>
 
 <style>
   .tab-row {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--border-color);
-    transition: background 0.15s;
+    min-height: 36px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    cursor: default;
+    transition:
+      background 0.15s,
+      opacity 0.15s;
   }
 
-  .tab-row:hover {
+  .tab-row:hover,
+  .tab-row.selected {
     background: var(--bg-secondary);
+  }
+
+  .tab-row.active {
+    background: var(--active-bg);
   }
 
   .tab-row.closed {
     opacity: 0.6;
   }
 
+  .tab-row.dropBefore::before,
+  .tab-row.dropAfter::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    z-index: 2;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--accent-color);
+    pointer-events: none;
+  }
+
+  .tab-row.dropBefore::before {
+    top: -1px;
+  }
+
+  .tab-row.dropAfter::after {
+    bottom: -1px;
+  }
+
   .favicon-btn {
-    flex-shrink: 0;
+    flex: 0 0 28px;
     width: 28px;
     height: 28px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: var(--radius-sm);
-    padding: 4px;
-    transition:
-      transform 0.2s ease,
-      box-shadow 0.2s ease,
-      background 0.15s;
   }
 
-  .favicon-btn.can-go-home:hover {
-    transform: scale(1.15) translateY(-1px);
-    box-shadow: var(--shadow-md);
+  .favicon-btn:hover,
+  .favicon-btn.home-action {
     background: var(--bg-hover);
-    cursor: pointer;
   }
 
-  .favicon-btn.is-closed:hover {
-    transform: scale(1.1);
-    background: var(--bg-hover);
-    cursor: pointer;
+  .favicon {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
   }
 
-  .favicon-btn:disabled {
-    cursor: default;
+  .fallback-icon {
+    color: var(--text-tertiary);
+    font-size: 16px;
   }
 
-  .favicon-img {
-    width: 20px;
-    height: 20px;
-    border-radius: 2px;
+  .fallback-pin {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-tertiary);
   }
 
-  .title-area {
-    flex: 1;
+  .main {
     min-width: 0;
-    overflow: hidden;
-    cursor: pointer;
-    transition: transform 0.2s ease;
-  }
-
-  .title-area.shifted {
-    transform: translateY(-4px);
+    flex: 1;
+    display: flex;
+    align-items: center;
   }
 
   .title-line {
     display: flex;
-    align-items: baseline;
+    align-items: center;
     min-width: 0;
     overflow: hidden;
   }
 
   :global(.tab-name) {
+    font-size: 15px;
     font-weight: 500;
-    font-size: 13px;
-    flex-shrink: 0;
+    min-width: 0;
   }
 
-  .page-title {
-    color: var(--text-secondary);
-    font-weight: 400;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .caption {
-    font-size: 11px;
-    color: var(--text-tertiary);
-    margin-top: 1px;
-    animation: fadeIn 0.15s ease;
-  }
-
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-      transform: translateY(-2px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
-    }
-  }
-
-  .actions {
+  .tools {
     display: flex;
     align-items: center;
-    gap: 6px;
-    flex-shrink: 0;
-  }
-
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--closed-color);
-  }
-
-  .status-dot.open {
-    background: var(--success-color);
-  }
-
-  .group-select {
-    font-size: 11px;
-    padding: 2px 4px;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    background: var(--bg-primary);
-    color: var(--text-secondary);
-    max-width: 80px;
+    gap: 4px;
     opacity: 0;
     transition: opacity 0.15s;
   }
 
-  .tab-row:hover .group-select {
+  .tab-row:hover .tools,
+  .tab-row.selected .tools {
     opacity: 1;
   }
 
-  .unpin-btn {
-    font-size: 16px;
-    width: 20px;
-    height: 20px;
+  .tool-btn {
+    width: 24px;
+    height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: var(--radius-sm);
-    color: var(--text-tertiary);
-    opacity: 0;
-    transition:
-      opacity 0.15s,
-      background 0.15s,
-      color 0.15s;
+    color: var(--text-secondary);
+    font-size: 14px;
   }
 
-  .tab-row:hover .unpin-btn {
-    opacity: 1;
-  }
-
-  .unpin-btn:hover {
+  .tool-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
+  }
+
+  .audio-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success-color);
   }
 </style>

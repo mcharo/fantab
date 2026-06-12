@@ -1,283 +1,261 @@
 <script lang="ts">
-  import type { ManagedTab, TabGroup } from '../../types';
-  import TabRow from './TabRow.svelte';
+  import type { PanelGroup, PanelTab, TabGroupColor } from '../../types';
   import GroupHeader from './GroupHeader.svelte';
+  import Icon from './Icon.svelte';
+  import TabRow from './TabRow.svelte';
+
+  type DropPosition = 'before' | 'after';
 
   interface Props {
-    tabs: ManagedTab[];
-    groups: TabGroup[];
-    onUnpinTab: (id: string) => void;
-    onRenameTab: (id: string, name: string) => void;
-    onGoHome: (id: string) => void;
-    onReopenTab: (id: string) => void;
-    onCreateGroup: (name: string, color: string) => void;
-    onUpdateGroup: (id: string, updates: { name?: string; color?: string }) => void;
-    onDeleteGroup: (id: string) => void;
-    onMoveToGroup: (tabId: string, groupId: string | null) => void;
+    homePins: PanelTab[];
+    groups: PanelGroup[];
+    ungroupedTabs: PanelTab[];
+    topInset?: boolean;
+    selectedKey: string | null;
+    onActivate: (tab: PanelTab) => void;
+    onClose: (tabId: number) => void;
+    onRename: (tab: PanelTab, alias: string) => void;
+    onCreateHomePin: (tabId: number) => void;
+    onRemoveHomePin: (homePinId: string) => void;
+    onGoHome: (homePinId: string) => void;
+    onContextMenu: (tab: PanelTab, x: number, y: number) => void;
+    onMoveToGroup: (tabId: number, groupId: number) => void;
+    onUngroup: (tabId: number) => void;
+    onCloseGroup: (groupId: number) => void;
+    onUpdateGroup: (
+      groupId: number,
+      updates: { title?: string; color?: TabGroupColor; collapsed?: boolean },
+    ) => void;
+    onMoveTab: (tabId: number, index: number) => void;
+    onMoveHomePin: (homePinId: string, index: number) => void;
   }
 
   let {
-    tabs,
+    homePins,
     groups,
-    onUnpinTab,
-    onRenameTab,
+    ungroupedTabs,
+    topInset = false,
+    selectedKey,
+    onActivate,
+    onClose,
+    onRename,
+    onCreateHomePin,
+    onRemoveHomePin,
     onGoHome,
-    onReopenTab,
-    onCreateGroup,
-    onUpdateGroup,
-    onDeleteGroup,
+    onContextMenu,
     onMoveToGroup,
+    onUngroup,
+    onCloseGroup,
+    onUpdateGroup,
+    onMoveTab,
+    onMoveHomePin,
   }: Props = $props();
 
-  let collapsedGroups = $state<Set<string>>(new Set());
-  let showNewGroupForm = $state(false);
-  let newGroupName = $state('');
-  let newGroupColor = $state('#4285f4');
+  let pinnedCollapsed = $state(false);
 
-  const sortedGroups = $derived(
-    [...groups].sort((a, b) => a.order - b.order),
+  const showDefaultSeparator = $derived(
+    ungroupedTabs.length > 0 && (homePins.length > 0 || groups.length > 0),
   );
 
-  const ungroupedTabs = $derived(
-    tabs
-      .filter((t) => t.groupId === null)
-      .sort((a, b) => a.createdAt - b.createdAt),
-  );
-
-  function tabsForGroup(groupId: string): ManagedTab[] {
-    return tabs
-      .filter((t) => t.groupId === groupId)
-      .sort((a, b) => a.createdAt - b.createdAt);
+  function homePinDropIndex(targetHomePinId: string): number {
+    return homePins.findIndex((tab) => tab.homePinId === targetHomePinId);
   }
 
-  function toggleGroup(id: string) {
-    const next = new Set(collapsedGroups);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    collapsedGroups = next;
+  function handleHomePinDrop(
+    homePinId: string,
+    targetHomePinId: string,
+    position: DropPosition,
+  ) {
+    const currentIndex = homePins.findIndex((tab) => tab.homePinId === homePinId);
+    const targetIndex = homePinDropIndex(targetHomePinId);
+    if (currentIndex < 0 || targetIndex < 0) return;
+
+    let insertIndex = targetIndex + (position === 'after' ? 1 : 0);
+    if (currentIndex < insertIndex) insertIndex -= 1;
+
+    if (currentIndex !== insertIndex) onMoveHomePin(homePinId, insertIndex);
   }
 
-  function submitNewGroup() {
-    const name = newGroupName.trim();
-    if (!name) return;
-    onCreateGroup(name, newGroupColor);
-    newGroupName = '';
-    newGroupColor = '#4285f4';
-    showNewGroupForm = false;
+  function parseTabDragPayload(event: DragEvent): number | null {
+    try {
+      const payload = JSON.parse(event.dataTransfer?.getData('text/plain') ?? '');
+      return payload.type === 'tab' && typeof payload.tabId === 'number'
+        ? payload.tabId
+        : null;
+    } catch {
+      return null;
+    }
   }
 
-  const GROUP_COLORS = [
-    '#4285f4',
-    '#34a853',
-    '#fbbc04',
-    '#ea4335',
-    '#a142f4',
-    '#24c1e0',
-    '#f538a0',
-    '#5f6368',
-  ];
+  function handleUngroupedDrop(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const tabId = parseTabDragPayload(event);
+    if (tabId !== null) onUngroup(tabId);
+  }
 </script>
 
-<div class="tab-list">
-  {#each sortedGroups as group (group.id)}
-    {@const groupTabs = tabsForGroup(group.id)}
-    <GroupHeader
-      {group}
-      collapsed={collapsedGroups.has(group.id)}
-      onToggle={() => toggleGroup(group.id)}
-      {onUpdateGroup}
-      {onDeleteGroup}
-    />
-    {#if !collapsedGroups.has(group.id)}
-      {#if groupTabs.length === 0}
-        <div class="empty-group">No tabs in this group</div>
-      {:else}
-        {#each groupTabs as tab (tab.id)}
+<div
+  class="tab-list"
+  class:topInset
+  role="presentation"
+  ondragover={(event) => event.preventDefault()}
+  ondrop={handleUngroupedDrop}
+>
+  {#if homePins.length > 0}
+    <div class="section-header">
+      <button
+        class="toggle-btn"
+        onclick={() => (pinnedCollapsed = !pinnedCollapsed)}
+        title={pinnedCollapsed ? 'Expand pinned' : 'Collapse pinned'}
+      >
+        <Icon name={pinnedCollapsed ? 'chevron-right' : 'chevron-down'} size={14} />
+      </button>
+      <div class="section-label">Pinned</div>
+    </div>
+
+    {#if !pinnedCollapsed}
+      <div class="section">
+        {#each homePins as tab (tab.key)}
           <TabRow
             {tab}
-            {groups}
-            onUnpin={onUnpinTab}
-            onRename={onRenameTab}
+            selected={selectedKey === tab.key}
+            {onActivate}
+            {onClose}
+            {onRename}
+            {onCreateHomePin}
+            {onRemoveHomePin}
             {onGoHome}
-            onReopen={onReopenTab}
-            {onMoveToGroup}
+            {onContextMenu}
+            onTabDrop={onMoveTab}
+            onHomePinDrop={handleHomePinDrop}
           />
         {/each}
-      {/if}
+      </div>
+    {/if}
+  {/if}
+
+  {#each groups as group (group.id)}
+    <GroupHeader
+      {group}
+      {onUpdateGroup}
+      onDropTab={onMoveToGroup}
+      {onCloseGroup}
+    />
+    {#if !group.collapsed}
+      <div class="section">
+        {#each group.tabs as tab (tab.key)}
+          <TabRow
+            {tab}
+            selected={selectedKey === tab.key}
+            {onActivate}
+            {onClose}
+            {onRename}
+            {onCreateHomePin}
+            {onRemoveHomePin}
+            {onGoHome}
+            {onContextMenu}
+            onTabDrop={onMoveTab}
+            onHomePinDrop={handleHomePinDrop}
+          />
+        {/each}
+      </div>
     {/if}
   {/each}
 
   {#if ungroupedTabs.length > 0}
-    {#if sortedGroups.length > 0}
-      <div class="section-label">Ungrouped</div>
+    {#if showDefaultSeparator}
+      <div class="default-separator" role="presentation"></div>
     {/if}
-    {#each ungroupedTabs as tab (tab.id)}
-      <TabRow
-        {tab}
-        {groups}
-        onUnpin={onUnpinTab}
-        onRename={onRenameTab}
-        {onGoHome}
-        onReopen={onReopenTab}
-        {onMoveToGroup}
-      />
-    {/each}
+
+    <div class="section default-section">
+      {#each ungroupedTabs as tab (tab.key)}
+        <TabRow
+          {tab}
+          selected={selectedKey === tab.key}
+          {onActivate}
+          {onClose}
+          {onRename}
+          {onCreateHomePin}
+          {onRemoveHomePin}
+          {onGoHome}
+          {onContextMenu}
+          onTabDrop={onMoveTab}
+          onHomePinDrop={handleHomePinDrop}
+        />
+      {/each}
+    </div>
   {/if}
 
-  <div class="add-group-section">
-    {#if showNewGroupForm}
-      <form
-        class="new-group-form"
-        onsubmit={(e) => {
-          e.preventDefault();
-          submitNewGroup();
-        }}
-      >
-        <input
-          bind:value={newGroupName}
-          placeholder="Group name"
-          class="group-name-input"
-        />
-        <div class="color-picker">
-          {#each GROUP_COLORS as color}
-            <button
-              type="button"
-              class="color-swatch"
-              class:selected={newGroupColor === color}
-              style="background: {color}"
-              onclick={() => (newGroupColor = color)}
-              aria-label="Color {color}"
-            ></button>
-          {/each}
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="save-btn">Create</button>
-          <button
-            type="button"
-            class="cancel-btn"
-            onclick={() => (showNewGroupForm = false)}
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
-    {:else}
-      <button
-        class="add-group-btn"
-        onclick={() => (showNewGroupForm = true)}
-      >
-        + New Group
-      </button>
-    {/if}
-  </div>
+  {#if homePins.length === 0 && groups.length === 0 && ungroupedTabs.length === 0}
+    <div class="empty">No matching tabs</div>
+  {/if}
 </div>
 
 <style>
   .tab-list {
     flex: 1;
     overflow-y: auto;
+    padding: 8px;
+  }
+
+  /* Clear the floating header buttons when there's no PINNED section to share
+     their row. */
+  .tab-list.topInset {
+    padding-top: 40px;
+  }
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+
+  .default-section {
+    padding-top: 4px;
+  }
+
+  .default-separator {
+    height: 1px;
+    margin: 12px 8px 7px;
+    background: var(--border-color);
+  }
+
+  .section-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 8px 5px;
+  }
+
+  .toggle-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+  }
+
+  .toggle-btn:hover {
+    background: var(--bg-hover);
   }
 
   .section-label {
+    color: var(--text-tertiary);
     font-size: 11px;
-    font-weight: 600;
-    color: var(--text-tertiary);
+    font-weight: 700;
+    letter-spacing: 0.4px;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
-    padding: 12px 12px 4px;
   }
 
-  .empty-group {
-    padding: 8px 12px 8px 42px;
-    font-size: 12px;
-    color: var(--text-tertiary);
-    font-style: italic;
-  }
-
-  .add-group-section {
-    padding: 8px 12px;
-    border-top: 1px solid var(--border-color);
-  }
-
-  .add-group-btn {
-    color: var(--accent-color);
-    font-size: 12px;
-    font-weight: 500;
-    padding: 6px 0;
-  }
-
-  .add-group-btn:hover {
-    text-decoration: underline;
-  }
-
-  .new-group-form {
+  .empty {
     display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .group-name-input {
-    padding: 6px 8px;
-    border: 1px solid var(--border-color);
-    border-radius: var(--radius-sm);
-    background: var(--bg-secondary);
-    outline: none;
-  }
-
-  .group-name-input:focus {
-    border-color: var(--accent-color);
-  }
-
-  .color-picker {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-  }
-
-  .color-swatch {
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    border: 2px solid transparent;
-    transition:
-      border-color 0.15s,
-      transform 0.15s;
-  }
-
-  .color-swatch.selected {
-    border-color: var(--text-primary);
-    transform: scale(1.15);
-  }
-
-  .color-swatch:hover {
-    transform: scale(1.15);
-  }
-
-  .form-actions {
-    display: flex;
-    gap: 8px;
-  }
-
-  .save-btn {
-    padding: 4px 12px;
-    background: var(--accent-color);
-    color: #fff;
-    border-radius: var(--radius-sm);
-    font-size: 12px;
-    font-weight: 500;
-  }
-
-  .save-btn:hover {
-    background: var(--accent-hover);
-  }
-
-  .cancel-btn {
-    padding: 4px 12px;
+    align-items: center;
+    justify-content: center;
+    min-height: 160px;
     color: var(--text-secondary);
     font-size: 12px;
-  }
-
-  .cancel-btn:hover {
-    color: var(--text-primary);
   }
 </style>

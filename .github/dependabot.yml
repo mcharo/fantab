@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Keep SHA-pinned actions current (Dependabot bumps the SHA and the version
+  # comment together, so pinning doesn't mean falling behind on patches).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly

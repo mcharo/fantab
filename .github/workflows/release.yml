@@ -1,0 +1,68 @@
+name: Release
+
+# Triggered by pushing a version tag, e.g.
+#   make release VERSION=0.3.0
+#   git commit -am "release 0.3.0" && git tag v0.3.0 && git push --follow-tags
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+# Least privilege: grant nothing by default, opt in per job.
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the GitHub Release + upload the zip
+    # Only a non-secret boolean is exposed job-wide; the actual Chrome Web Store
+    # credentials are scoped to the publish step so untrusted code in earlier
+    # steps (npm ci, build) never sees them.
+    env:
+      PUBLISH_ENABLED: ${{ secrets.CWS_EXTENSION_ID != '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      # --ignore-scripts blocks dependency install/postinstall code execution.
+      - run: npm ci --ignore-scripts
+
+      - name: Verify tag matches package.json version
+        run: |
+          PKG="$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG" != "$TAG" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
+
+      - name: Type-check, test, and package
+        run: |
+          make check
+          make package
+
+      # Use the preinstalled gh CLI instead of a third-party release action.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" fantab-*.zip --verify-tag --generate-notes
+
+      - name: Publish to Chrome Web Store
+        if: ${{ env.PUBLISH_ENABLED == 'true' }}
+        env:
+          EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          NPM_CONFIG_IGNORE_SCRIPTS: "true"
+        # No subcommand = upload AND publish. Use `upload` to leave a draft.
+        run: npx --yes chrome-webstore-upload-cli@4.0.1 --source "$(ls fantab-*.zip)"
