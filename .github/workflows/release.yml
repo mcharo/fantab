@@ -3,6 +3,10 @@ name: Release
 # Triggered by pushing a version tag, e.g.
 #   make release VERSION=0.3.0
 #   git commit -am "release 0.3.0" && git tag v0.3.0 && git push --follow-tags
+#
+# The `release` job builds + creates the GitHub Release automatically. The
+# `publish` job is gated by the `chrome-web-store` environment (manual approval +
+# v* tags only) and holds the Chrome Web Store credentials.
 on:
   push:
     tags:
@@ -16,11 +20,6 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the GitHub Release + upload the zip
-    # Only a non-secret boolean is exposed job-wide; the actual Chrome Web Store
-    # credentials are scoped to the publish step so untrusted code in earlier
-    # steps (npm ci, build) never sees them.
-    env:
-      PUBLISH_ENABLED: ${{ secrets.CWS_EXTENSION_ID != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -56,8 +55,27 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create "$GITHUB_REF_NAME" fantab-*.zip --verify-tag --generate-notes
 
+  publish:
+    needs: release
+    runs-on: ubuntu-24.04
+    # Gated by the chrome-web-store environment: manual review + v* tags only.
+    # The CWS_* secrets live in that environment, not in the repo secret scope.
+    environment: chrome-web-store
+    permissions:
+      contents: read # download the release asset via gh
+    steps:
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      - name: Download the released zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release download "$GITHUB_REF_NAME" --pattern 'fantab-*.zip'
+
       - name: Publish to Chrome Web Store
-        if: ${{ env.PUBLISH_ENABLED == 'true' }}
         env:
           EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
           CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}

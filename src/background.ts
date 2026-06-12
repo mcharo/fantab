@@ -273,6 +273,19 @@ async function flashActionBadge(
   }, 1200);
 }
 
+async function notifyUrlCopied(tabId: number): Promise<boolean> {
+  // Resolves if a side panel received the message, rejects if none is open.
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'URL_COPIED',
+      payload: { tabId },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function handleCopyCurrentUrlCommand(
   tab?: chrome.tabs.Tab,
 ): Promise<void> {
@@ -281,11 +294,18 @@ async function handleCopyCurrentUrlCommand(
   if (!url) return;
 
   const copied = await copyTextToClipboard(url, commandTab?.id);
-  await flashActionBadge(
-    commandTab?.id,
-    copied ? 'OK' : 'ERR',
-    copied ? '#15803d' : '#b91c1c',
-  );
+  if (!copied) {
+    await flashActionBadge(commandTab?.id, 'ERR', '#b91c1c');
+    return;
+  }
+
+  // Prefer an in-panel flourish on the copied tab; fall back to the action
+  // badge only when no side panel is open to show it.
+  const flourished =
+    typeof commandTab?.id === 'number' && (await notifyUrlCopied(commandTab.id));
+  if (!flourished) {
+    await flashActionBadge(commandTab?.id, 'OK', '#15803d');
+  }
 }
 
 function getLinkRoutingPolicyForTab(

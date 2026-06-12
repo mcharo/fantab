@@ -160,6 +160,11 @@ export interface PanelStateUpdatedMessage {
   payload: Record<string, never>;
 }
 
+export interface UrlCopiedMessage {
+  action: 'URL_COPIED';
+  payload: { tabId: number };
+}
+
 export type RequestMessage =
   | GetPanelStateMessage
   | CreateTabMessage
@@ -190,6 +195,7 @@ export type ContentRequestMessage =
 
 export type BroadcastMessage =
   | PanelStateUpdatedMessage
-  | LinkRoutingPolicyUpdatedMessage;
+  | LinkRoutingPolicyUpdatedMessage
+  | UrlCopiedMessage;
 
 export type Message = RequestMessage | ContentRequestMessage | BroadcastMessage;

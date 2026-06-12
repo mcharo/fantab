@@ -4,6 +4,7 @@
   export type ControlIconName =
     | 'search'
     | 'plus'
+    | 'check'
     | 'x'
     | 'chevron-right'
     | 'chevron-down'
@@ -42,6 +43,8 @@
   {:else if name === 'plus'}
     <path d="M12 5v14" />
     <path d="M5 12h14" />
+  {:else if name === 'check'}
+    <path d="M20 6 9 17l-5-5" />
   {:else if name === 'x'}
     <path d="M18 6 6 18" />
     <path d="m6 6 12 12" />

@@ -33,8 +33,13 @@
   let searchQuery = $state('');
   let searchOpen = $state(false);
   let selectedKey = $state<string | null>(null);
+  // Tracks the last active tab so the selection can follow it when it changes
+  // (e.g. a new tab opened via Cmd+T) without resetting arrow-key navigation.
+  let lastActiveTabId: number | null = null;
   let errorMessage = $state<string | null>(null);
   let contextMenu = $state<{ tab: PanelTab; x: number; y: number } | null>(null);
+  let copiedKey = $state<string | null>(null);
+  let copiedTimer: ReturnType<typeof setTimeout> | undefined;
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -80,13 +85,20 @@
   $effect(() => {
     if (visibleTabs.length === 0) {
       selectedKey = null;
+      lastActiveTabId = panelState.activeTabId;
       return;
     }
 
     const activeTab = visibleTabs.find((tab) => tab.tabId === panelState.activeTabId);
-    if (!selectedKey && activeTab) {
-      selectedKey = activeTab.key;
-      return;
+
+    // When the active tab changes (e.g. opening a new tab), move the selection
+    // to it so the highlight doesn't linger on the previously selected row.
+    if (panelState.activeTabId !== lastActiveTabId) {
+      lastActiveTabId = panelState.activeTabId;
+      if (activeTab) {
+        selectedKey = activeTab.key;
+        return;
+      }
     }
 
     if (!selectedKey || !visibleTabs.some((tab) => tab.key === selectedKey)) {
@@ -416,12 +428,25 @@
     if (selectedTab) await activateTab(selectedTab);
   }
 
+  function flashCopied(tabId: number) {
+    const tab = visibleTabs.find((candidate) => candidate.tabId === tabId);
+    if (!tab) return;
+
+    copiedKey = tab.key;
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedKey = null;
+    }, 1500);
+  }
+
   $effect(() => {
     void refreshPanelState();
 
     const onMessage = (message: BroadcastMessage) => {
       if (message.action === 'PANEL_STATE_UPDATED') {
         void refreshPanelState();
+      } else if (message.action === 'URL_COPIED') {
+        flashCopied(message.payload.tabId);
       }
     };
 
@@ -455,6 +480,7 @@
     ungroupedTabs={filteredUngroupedTabs}
     topInset={listTopInset}
     {selectedKey}
+    {copiedKey}
     onActivate={activateTab}
     onClose={(tabId) =>
       sendMessage({ action: 'CLOSE_TAB', payload: { tabId } })}

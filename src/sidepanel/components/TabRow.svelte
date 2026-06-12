@@ -17,6 +17,7 @@
   interface Props {
     tab: PanelTab;
     selected: boolean;
+    copied?: boolean;
     onActivate: (tab: PanelTab) => void;
     onClose: (tabId: number) => void;
     onRename: (tab: PanelTab, alias: string) => void;
@@ -35,6 +36,7 @@
   let {
     tab,
     selected,
+    copied = false,
     onActivate,
     onClose,
     onRename,
@@ -222,6 +224,7 @@
   class="tab-row"
   class:selected
   class:active={tab.isActive}
+  class:copied
   class:closed={!tab.isOpen}
   class:dropBefore={dropPosition === 'before'}
   class:dropAfter={dropPosition === 'after'}
@@ -327,6 +330,13 @@
       </button>
     {/if}
   </div>
+
+  {#if copied}
+    <span class="copied-badge" aria-hidden="true">
+      <Icon name="check" size={13} />
+      Copied
+    </span>
+  {/if}
 </div>
 
 <style>
@@ -355,6 +365,88 @@
 
   .tab-row.closed {
     opacity: 0.6;
+  }
+
+  .tab-row.copied {
+    animation: copied-glow 1.5s ease;
+  }
+
+  /* Same 0/12/72/100% envelope as copied-badge so the ring and pill fade in and
+     out together. Spread stays constant; only the alpha fades. */
+  @keyframes copied-glow {
+    0% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color) 0%, transparent);
+    }
+    12% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color) 55%, transparent);
+    }
+    72% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color) 55%, transparent);
+    }
+    100% {
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-color) 0%, transparent);
+    }
+  }
+
+  .copied-badge {
+    position: absolute;
+    right: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 4;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px 2px 6px;
+    border-radius: 999px;
+    background: var(--success-color);
+    color: var(--bg-primary);
+    font-size: 11px;
+    font-weight: 700;
+    pointer-events: none;
+    animation: copied-badge 1.5s ease forwards;
+  }
+
+  @keyframes copied-badge {
+    0% {
+      opacity: 0;
+      transform: translate(4px, -50%) scale(0.9);
+    }
+    12% {
+      opacity: 1;
+      transform: translate(0, -50%) scale(1);
+    }
+    72% {
+      opacity: 1;
+      transform: translate(0, -50%) scale(1);
+    }
+    100% {
+      opacity: 0;
+      transform: translate(0, -50%) scale(1);
+    }
+  }
+
+  @keyframes copied-badge-fade {
+    0% {
+      opacity: 0;
+    }
+    12%,
+    72% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .tab-row.copied {
+      animation: none;
+    }
+
+    .copied-badge {
+      animation-name: copied-badge-fade;
+    }
   }
 
   .tab-row.dropBefore::before,

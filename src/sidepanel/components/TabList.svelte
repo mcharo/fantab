@@ -12,6 +12,7 @@
     ungroupedTabs: PanelTab[];
     topInset?: boolean;
     selectedKey: string | null;
+    copiedKey: string | null;
     onActivate: (tab: PanelTab) => void;
     onClose: (tabId: number) => void;
     onRename: (tab: PanelTab, alias: string) => void;
@@ -36,6 +37,7 @@
     ungroupedTabs,
     topInset = false,
     selectedKey,
+    copiedKey,
     onActivate,
     onClose,
     onRename,
@@ -120,6 +122,7 @@
           <TabRow
             {tab}
             selected={selectedKey === tab.key}
+            copied={copiedKey === tab.key}
             {onActivate}
             {onClose}
             {onRename}
@@ -148,6 +151,7 @@
           <TabRow
             {tab}
             selected={selectedKey === tab.key}
+            copied={copiedKey === tab.key}
             {onActivate}
             {onClose}
             {onRename}
@@ -173,6 +177,7 @@
         <TabRow
           {tab}
           selected={selectedKey === tab.key}
+          copied={copiedKey === tab.key}
           {onActivate}
           {onClose}
           {onRename}
