@@ -58,6 +58,7 @@ export function createDefaultState(): StoredStateV6 {
     activeSpaceByWindowId: {
       [DEFAULT_WINDOW_KEY]: DEFAULT_SPACE_ID,
     },
+    lastActiveTabBySpace: {},
     spaces: [createDefaultSpace()],
     tabAliases: {},
     tabSpaces: {},
@@ -74,6 +75,19 @@ function tabKey(tabId: number): string {
   return String(tabId);
 }
 
+function activeTabSpaceKey(
+  windowId: number | null | undefined,
+  spaceId: string,
+): string {
+  return `${windowKey(windowId)}:${spaceId}`;
+}
+
+function spaceIdFromActiveTabSpaceKey(key: string): string | null {
+  const separatorIndex = key.indexOf(':');
+  if (separatorIndex === -1) return null;
+  return key.slice(separatorIndex + 1);
+}
+
 export function isStoredStateV6(value: unknown): value is StoredStateV6 {
   if (!value || typeof value !== 'object') return false;
 
@@ -87,7 +101,9 @@ export function isStoredStateV6(value: unknown): value is StoredStateV6 {
     !!state.tabAliases &&
     typeof state.tabAliases === 'object' &&
     !!state.tabSpaces &&
-    typeof state.tabSpaces === 'object'
+    typeof state.tabSpaces === 'object' &&
+    (state.lastActiveTabBySpace === undefined ||
+      typeof state.lastActiveTabBySpace === 'object')
   );
 }
 
@@ -152,6 +168,7 @@ function migrateV3State(state: LegacyStoredStateV3): StoredStateV6 {
       [DEFAULT_WINDOW_KEY]: state.activeSpaceId,
     },
     spaces: state.spaces.map(normalizeSpace),
+    lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
   };
@@ -162,6 +179,7 @@ function migrateV4State(state: LegacyStoredStateV4): StoredStateV6 {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: state.activeSpaceByWindowId,
     spaces: state.spaces.map(normalizeSpace),
+    lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
   };
@@ -172,6 +190,7 @@ function migrateV5State(state: LegacyStoredStateV5): StoredStateV6 {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: state.activeSpaceByWindowId,
     spaces: state.spaces.map(normalizeSpace),
+    lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
   };
@@ -197,10 +216,21 @@ export function normalizeState(state: StoredStateV6): StoredStateV6 {
       spaceIds.has(spaceId),
     ),
   );
+  const lastActiveTabBySpace: Record<string, number> = {};
+
+  for (const [key, tabId] of Object.entries(
+    state.lastActiveTabBySpace ?? {},
+  )) {
+    const spaceId = spaceIdFromActiveTabSpaceKey(key);
+    if (spaceId && spaceIds.has(spaceId) && typeof tabId === 'number') {
+      lastActiveTabBySpace[key] = tabId;
+    }
+  }
 
   return {
     ...state,
     activeSpaceByWindowId,
+    lastActiveTabBySpace,
     tabSpaces,
     spaces: spaces.map((space, index) => ({
       ...space,
@@ -351,6 +381,61 @@ export function moveHomePin(
   }));
 }
 
+export function moveHomePinToSpace(
+  state: StoredStateV6,
+  id: string,
+  targetSpaceId: string,
+): StoredStateV6 {
+  const targetSpace = state.spaces.find((space) => space.id === targetSpaceId);
+  if (!targetSpace) return state;
+
+  const sourceSpace = state.spaces.find((space) =>
+    space.homePins.some((pin) => pin.id === id),
+  );
+  if (!sourceSpace || sourceSpace.id === targetSpace.id) return state;
+
+  const homePin = sourceSpace.homePins.find((pin) => pin.id === id);
+  if (!homePin) return state;
+
+  const nextTargetOrder = targetSpace.homePins.reduce(
+    (max, pin) => Math.max(max, pin.order),
+    -1,
+  ) + 1;
+
+  let nextState = {
+    ...state,
+    spaces: state.spaces.map((space) => {
+      if (space.id === sourceSpace.id) {
+        return {
+          ...space,
+          homePins: space.homePins
+            .filter((pin) => pin.id !== id)
+            .sort((a, b) => a.order - b.order)
+            .map((pin, index) => ({ ...pin, order: index })),
+        };
+      }
+
+      if (space.id === targetSpace.id) {
+        return {
+          ...space,
+          homePins: [
+            ...space.homePins,
+            { ...homePin, order: nextTargetOrder },
+          ],
+        };
+      }
+
+      return space;
+    }),
+  };
+
+  if (typeof homePin.tabId === 'number') {
+    nextState = assignTabToSpace(nextState, homePin.tabId, targetSpace.id);
+  }
+
+  return nextState;
+}
+
 export function createSpace(
   state: StoredStateV6,
   name: string,
@@ -460,8 +545,20 @@ export function deleteSpace(
       remainingSpaceIds.has(assignedSpaceId) ? assignedSpaceId : fallbackSpaceId,
     ]),
   );
+  const lastActiveTabBySpace = Object.fromEntries(
+    Object.entries(state.lastActiveTabBySpace).filter(([key]) => {
+      const rememberedSpaceId = spaceIdFromActiveTabSpaceKey(key);
+      return rememberedSpaceId && remainingSpaceIds.has(rememberedSpaceId);
+    }),
+  );
 
-  return { ...state, activeSpaceByWindowId, spaces, tabSpaces };
+  return {
+    ...state,
+    activeSpaceByWindowId,
+    lastActiveTabBySpace,
+    spaces,
+    tabSpaces,
+  };
 }
 
 export function renameTabAlias(
@@ -523,6 +620,58 @@ export function pruneTabSpacesForTabs(
   }
 
   return { ...state, tabSpaces };
+}
+
+export function pruneLastActiveTabsForTabs(
+  state: StoredStateV6,
+  liveTabIds: Set<number>,
+): StoredStateV6 {
+  const lastActiveTabBySpace: Record<string, number> = {};
+
+  for (const [key, tabId] of Object.entries(state.lastActiveTabBySpace)) {
+    if (liveTabIds.has(tabId)) {
+      lastActiveTabBySpace[key] = tabId;
+    }
+  }
+
+  if (
+    Object.keys(lastActiveTabBySpace).length ===
+    Object.keys(state.lastActiveTabBySpace).length
+  ) {
+    return state;
+  }
+
+  return { ...state, lastActiveTabBySpace };
+}
+
+export function rememberActiveTabForSpace(
+  state: StoredStateV6,
+  windowId: number | null | undefined,
+  spaceId: string,
+  tabId: number,
+): StoredStateV6 {
+  if (!state.spaces.some((space) => space.id === spaceId)) return state;
+
+  const key = activeTabSpaceKey(windowId, spaceId);
+  if (state.lastActiveTabBySpace[key] === tabId) return state;
+
+  return {
+    ...state,
+    lastActiveTabBySpace: {
+      ...state.lastActiveTabBySpace,
+      [key]: tabId,
+    },
+  };
+}
+
+export function getRememberedActiveTabId(
+  state: StoredStateV6,
+  windowId: number | null | undefined,
+  spaceId: string,
+): number | null {
+  return (
+    state.lastActiveTabBySpace[activeTabSpaceKey(windowId, spaceId)] ?? null
+  );
 }
 
 export function assignTabToSpace(
@@ -628,7 +777,10 @@ export function reconcileStateForTabs(
   );
 
   const prunedState = pruneTabSpacesForTabs(
-    pruneAliasesForTabs(state, liveTabIds),
+    pruneLastActiveTabsForTabs(
+      pruneAliasesForTabs(state, liveTabIds),
+      liveTabIds,
+    ),
     liveTabIds,
   );
 

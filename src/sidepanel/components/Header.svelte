@@ -3,6 +3,7 @@
     searchQuery: string;
     searchOpen?: boolean;
     onSearchChange: (query: string) => void;
+    onOpenSettings: () => void;
     onCreateTab: () => void;
     onCreateGroup: () => void;
     canCreateGroup: boolean;
@@ -14,6 +15,7 @@
     searchQuery,
     searchOpen = $bindable(false),
     onSearchChange,
+    onOpenSettings,
     onCreateTab,
     onCreateGroup,
     canCreateGroup,
@@ -50,6 +52,9 @@
         {:else}
           <Icon name="search" size={17} />
         {/if}
+      </button>
+      <button class="icon-btn" onclick={onOpenSettings} title="Settings">
+        <Icon name="settings" size={17} />
       </button>
       <button
         class="icon-btn"

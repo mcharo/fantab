@@ -40,6 +40,7 @@ const state: StoredStateV6 = {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
   },
+  lastActiveTabBySpace: {},
   spaces: [
     {
       id: DEFAULT_SPACE_ID,
@@ -460,6 +461,7 @@ describe('nextFocusTabIdAfterClose', () => {
       windowId: 1,
       active: false,
       inActiveSpace: true,
+      lastAccessed: 0,
       ...overrides,
     };
   }
@@ -522,5 +524,26 @@ describe('nextFocusTabIdAfterClose', () => {
     ];
 
     expect(nextFocusTabIdAfterClose(tabs, new Set([2]), 1)).toBeNull();
+  });
+
+  it('prefers the most recently active same-space tab over proximity', () => {
+    const tabs = [
+      focusTab({ id: 1, index: 0, lastAccessed: 500 }),
+      focusTab({ id: 2, index: 1, active: true, lastAccessed: 900 }),
+      focusTab({ id: 3, index: 2, lastAccessed: 100 }),
+    ];
+
+    // Index proximity would pick the following tab (id 3); recency wins (id 1).
+    expect(nextFocusTabIdAfterClose(tabs, new Set([2]), 1)).toBe(1);
+  });
+
+  it('ignores recency of tabs in other spaces', () => {
+    const tabs = [
+      focusTab({ id: 1, index: 0, inActiveSpace: false, lastAccessed: 900 }),
+      focusTab({ id: 2, index: 1, active: true, lastAccessed: 800 }),
+      focusTab({ id: 3, index: 2, lastAccessed: 300 }),
+    ];
+
+    expect(nextFocusTabIdAfterClose(tabs, new Set([2]), 1)).toBe(3);
   });
 });

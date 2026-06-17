@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  assignTabToSpace,
   assignTabsToActiveSpaces,
   createSpace,
   deleteSpace,
+  getRememberedActiveTabId,
   isStoredStateV6,
   loadState,
   moveHomePin,
+  moveHomePinToSpace,
+  rememberActiveTabForSpace,
   reconcileStateForTabs,
   renameSpace,
   renameTabAlias,
@@ -33,6 +37,7 @@ const baseState: StoredStateV6 = {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
   },
+  lastActiveTabBySpace: {},
   spaces: [
     {
       id: DEFAULT_SPACE_ID,
@@ -100,6 +105,7 @@ describe('v6 storage state', () => {
     const state = await loadState();
     expect(state.version).toBe(6);
     expect(state.activeSpaceByWindowId.default).toBe(DEFAULT_SPACE_ID);
+    expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabAliases).toEqual({});
     expect(state.tabSpaces).toEqual({});
     expect(state.spaces).toHaveLength(1);
@@ -142,6 +148,7 @@ describe('v6 storage state', () => {
     const state = await loadState();
     expect(state.version).toBe(6);
     expect(state.activeSpaceByWindowId.default).toBe('focus');
+    expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
     expect(state.spaces.map((space) => [space.id, space.icon])).toEqual([
       [DEFAULT_SPACE_ID, 'circle'],
@@ -187,6 +194,7 @@ describe('v6 storage state', () => {
     const state = await loadState();
     expect(state.version).toBe(6);
     expect(state.activeSpaceByWindowId['1']).toBe('focus');
+    expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
     expect(state.spaces.map((space) => [space.id, space.icon])).toEqual([
       [DEFAULT_SPACE_ID, 'circle'],
@@ -214,20 +222,57 @@ describe('v6 storage state', () => {
     const state = await loadState();
     expect(state.version).toBe(6);
     expect(state.spaces[0].homePins).toHaveLength(2);
+    expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
   });
 
-  it('reconciles home pins and aliases against live tabs', () => {
-    const reconciled = reconcileStateForTabs(baseState, [
-      tab({
-        id: 1,
-        title: 'Inbox updated',
-        url: 'https://mail.example.com/inbox',
-        favIconUrl: 'mail.ico',
-      }),
-    ]);
+  it('normalizes existing v6 state that predates active-tab memory', async () => {
+    const storedState = {
+      version: 6,
+      activeSpaceByWindowId: baseState.activeSpaceByWindowId,
+      spaces: baseState.spaces,
+      tabAliases: {},
+      tabSpaces: {},
+    };
+
+    expect(isStoredStateV6(storedState)).toBe(true);
+
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({ fantab_state: storedState }),
+          set: vi.fn(),
+        },
+      },
+    });
+
+    const state = await loadState();
+    expect(state.lastActiveTabBySpace).toEqual({});
+  });
+
+  it('reconciles home pins, aliases, and remembered active tabs against live tabs', () => {
+    const reconciled = reconcileStateForTabs(
+      {
+        ...baseState,
+        lastActiveTabBySpace: {
+          [`1:${DEFAULT_SPACE_ID}`]: 1,
+          '1:closed': 99,
+        },
+      },
+      [
+        tab({
+          id: 1,
+          title: 'Inbox updated',
+          url: 'https://mail.example.com/inbox',
+          favIconUrl: 'mail.ico',
+        }),
+      ],
+    );
 
     expect(reconciled.tabAliases).toEqual({ '1': 'Mail alias' });
+    expect(reconciled.lastActiveTabBySpace).toEqual({
+      [`1:${DEFAULT_SPACE_ID}`]: 1,
+    });
     expect(reconciled.tabSpaces).toEqual({ '1': DEFAULT_SPACE_ID });
     expect(reconciled.spaces[0].homePins[0]).toMatchObject({
       tabId: 1,
@@ -312,6 +357,87 @@ describe('v6 storage state', () => {
     ]);
   });
 
+  it('moves home pins between spaces and keeps open tabs assigned to the target space', () => {
+    const moved = moveHomePinToSpace(
+      {
+        ...baseState,
+        spaces: [
+          baseState.spaces[0],
+          {
+            id: 'focus',
+            name: 'Focus',
+            icon: 'diamond',
+            createdAt: 3,
+            order: 1,
+            homePins: [
+              {
+                id: 'focus-pin',
+                homeUrl: 'https://notes.example.com/',
+                alias: 'Notes',
+                faviconUrl: '',
+                tabId: null,
+                lastKnownUrl: null,
+                lastKnownTitle: null,
+                createdAt: 3,
+                order: 0,
+              },
+            ],
+          },
+        ],
+      },
+      'pin-1',
+      'focus',
+    );
+
+    expect(moved.spaces[0].homePins.map((pin) => [pin.id, pin.order])).toEqual([
+      ['pin-2', 0],
+    ]);
+    expect(moved.spaces[1].homePins.map((pin) => [pin.id, pin.order])).toEqual([
+      ['focus-pin', 0],
+      ['pin-1', 1],
+    ]);
+    expect(moved.tabSpaces['1']).toBe('focus');
+  });
+
+  it('remembers the active tab independently per window and space', () => {
+    const remembered = rememberActiveTabForSpace(
+      baseState,
+      1,
+      DEFAULT_SPACE_ID,
+      1,
+    );
+
+    expect(
+      getRememberedActiveTabId(remembered, 1, DEFAULT_SPACE_ID),
+    ).toBe(1);
+    expect(
+      getRememberedActiveTabId(remembered, 2, DEFAULT_SPACE_ID),
+    ).toBeNull();
+  });
+
+  it('assigns regular tabs to another space', () => {
+    const moved = assignTabToSpace(
+      {
+        ...baseState,
+        spaces: [
+          baseState.spaces[0],
+          {
+            id: 'focus',
+            name: 'Focus',
+            icon: 'diamond',
+            createdAt: 3,
+            order: 1,
+            homePins: [],
+          },
+        ],
+      },
+      99,
+      'focus',
+    );
+
+    expect(moved.tabSpaces['99']).toBe('focus');
+  });
+
   it('creates, switches, renames, and deletes spaces', () => {
     const withNewSpace = createSpace(baseState, '  Personal  ', 1);
     const personalSpace = withNewSpace.spaces[1];
@@ -336,6 +462,7 @@ describe('v6 storage state', () => {
     expect(deleted.activeSpaceByWindowId.default).toBe(personalSpace.id);
     expect(deleted.activeSpaceByWindowId['1']).toBe(personalSpace.id);
     expect(deleted.activeSpaceByWindowId['2']).toBe(personalSpace.id);
+    expect(deleted.lastActiveTabBySpace).toEqual({});
     expect(deleted.tabSpaces).toEqual({
       '1': personalSpace.id,
       '99': personalSpace.id,

@@ -1,21 +1,23 @@
 <script lang="ts">
   import {
+    SPACE_EMOJIS,
     SPACE_ICONS,
     iconForSpaceIndex,
-    normalizeSpaceIcon,
+    isSpaceIconId,
   } from '../../spaceIcons';
-  import type { SpaceIconId, SpaceSummary } from '../../types';
+  import type { SpaceIcon, SpaceSummary } from '../../types';
   import { confirmDialog, promptDialog } from '../dialog';
   import Icon from './Icon.svelte';
+  import SpaceGlyph from './SpaceGlyph.svelte';
 
   interface Props {
     spaces: SpaceSummary[];
     activeSpaceId: string;
     onSwitchSpace: (spaceId: string) => void;
-    onCreateSpace: (name: string, icon: SpaceIconId) => void;
+    onCreateSpace: (name: string, icon: SpaceIcon) => void;
     onUpdateSpace: (
       spaceId: string,
-      updates: { name?: string; icon?: SpaceIconId },
+      updates: { name?: string; icon?: SpaceIcon },
     ) => void;
     onDeleteSpace: (spaceId: string) => void;
   }
@@ -31,7 +33,8 @@
 
   let editingSpaceId = $state<string | null>(null);
   let draftName = $state('');
-  let draftIcon = $state<SpaceIconId>('circle');
+  let draftIcon = $state<SpaceIcon>('circle');
+  let iconTab = $state<'icons' | 'emoji'>('icons');
 
   const editingSpace = $derived(
     spaces.find((space) => space.id === editingSpaceId),
@@ -44,6 +47,7 @@
     editingSpaceId = space.id;
     draftName = space.name;
     draftIcon = space.icon;
+    iconTab = isSpaceIconId(space.icon) ? 'icons' : 'emoji';
   }
 
   function closeEditor() {
@@ -115,19 +119,55 @@
         <button class="editor-btn primary" onclick={saveEditor}>Save</button>
       </div>
 
-      <div class="icon-grid" aria-label="Space icons">
-        {#each SPACE_ICONS as icon (icon.id)}
-          <button
-            class="icon-choice"
-            class:selected={draftIcon === icon.id}
-            onclick={() => (draftIcon = icon.id)}
-            title={icon.label}
-            aria-label={icon.label}
-          >
-            <Icon name={icon.id} size={18} />
-          </button>
-        {/each}
+      <div class="icon-tabs" role="tablist" aria-label="Icon style">
+        <button
+          class="icon-tab"
+          class:active={iconTab === 'icons'}
+          role="tab"
+          aria-selected={iconTab === 'icons'}
+          onclick={() => (iconTab = 'icons')}
+        >
+          Icons
+        </button>
+        <button
+          class="icon-tab"
+          class:active={iconTab === 'emoji'}
+          role="tab"
+          aria-selected={iconTab === 'emoji'}
+          onclick={() => (iconTab = 'emoji')}
+        >
+          Emoji
+        </button>
       </div>
+
+      {#if iconTab === 'icons'}
+        <div class="icon-grid" aria-label="Space icons">
+          {#each SPACE_ICONS as icon (icon.id)}
+            <button
+              class="icon-choice"
+              class:selected={draftIcon === icon.id}
+              onclick={() => (draftIcon = icon.id)}
+              title={icon.label}
+              aria-label={icon.label}
+            >
+              <Icon name={icon.id} size={18} />
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <div class="icon-grid emoji-grid" aria-label="Space emoji">
+          {#each SPACE_EMOJIS as emoji (emoji)}
+            <button
+              class="icon-choice emoji-choice"
+              class:selected={draftIcon === emoji}
+              onclick={() => (draftIcon = emoji)}
+              aria-label={`Emoji ${emoji}`}
+            >
+              {emoji}
+            </button>
+          {/each}
+        </div>
+      {/if}
 
       <div class="editor-actions">
         <button class="editor-btn" onclick={closeEditor}>Cancel</button>
@@ -143,19 +183,23 @@
   {/if}
 
   <div class="space-dock">
-    {#each spaces as space (space.id)}
-      <button
-        class="space-btn"
-        class:active={space.id === activeSpaceId}
-        onclick={() => onSwitchSpace(space.id)}
-        ondblclick={(event) => openEditor(space, event)}
-        oncontextmenu={(event) => openEditor(space, event)}
-        title={`${space.name} - double-click or right-click to edit`}
-        aria-label={space.name}
-      >
-        <Icon name={normalizeSpaceIcon(space.icon)} size={18} />
-      </button>
-    {/each}
+    <span class="dock-edge" aria-hidden="true"></span>
+
+    <div class="spaces">
+      {#each spaces as space (space.id)}
+        <button
+          class="space-btn"
+          class:active={space.id === activeSpaceId}
+          onclick={() => onSwitchSpace(space.id)}
+          ondblclick={(event) => openEditor(space, event)}
+          oncontextmenu={(event) => openEditor(space, event)}
+          title={`${space.name} - double-click or right-click to edit`}
+          aria-label={space.name}
+        >
+          <SpaceGlyph icon={space.icon} size={18} />
+        </button>
+      {/each}
+    </div>
 
     <button class="add-space-btn" onclick={createSpace} title="New space">
       <Icon name="plus" size={18} />
@@ -175,9 +219,23 @@
   .space-dock {
     display: flex;
     align-items: center;
-    justify-content: center;
     gap: 8px;
     min-height: 42px;
+  }
+
+  /* The spaces stay centred in the dock; the invisible edge spacer mirrors the
+     always-visible add button on the right so it doesn't pull them off-centre. */
+  .spaces {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .dock-edge {
+    flex: 0 0 34px;
   }
 
   .space-btn,
@@ -211,31 +269,19 @@
   }
 
   .add-space-btn {
-    width: 0;
-    height: 34px;
-    margin-left: -8px;
-    overflow: hidden;
-    opacity: 0;
-    pointer-events: none;
-    background: var(--bg-secondary);
-    color: var(--text-primary);
-    transition:
-      width 0.15s,
-      margin 0.15s,
-      opacity 0.15s,
-      background 0.15s;
-  }
-
-  .space-dock-shell:hover .add-space-btn,
-  .space-dock-shell:focus-within .add-space-btn {
+    flex: 0 0 34px;
     width: 34px;
-    margin-left: 0;
-    opacity: 1;
-    pointer-events: auto;
+    height: 34px;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    transition:
+      background 0.15s,
+      color 0.15s;
   }
 
   .add-space-btn:hover {
     background: var(--bg-hover);
+    color: var(--text-primary);
   }
 
   .space-popover {
@@ -304,10 +350,40 @@
     opacity: 0.35;
   }
 
+  .icon-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-secondary);
+  }
+
+  .icon-tab {
+    flex: 1;
+    height: 26px;
+    border-radius: calc(var(--radius-sm) - 1px);
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 650;
+  }
+
+  .icon-tab:hover:not(.active) {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .icon-tab.active {
+    background: var(--active-bg);
+    color: var(--accent-color);
+  }
+
   .icon-grid {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
+    max-height: 168px;
+    overflow-y: auto;
   }
 
   .icon-choice {
@@ -321,5 +397,10 @@
   .icon-choice.selected {
     background: var(--active-bg);
     color: var(--accent-color);
+  }
+
+  .emoji-choice {
+    font-size: 18px;
+    line-height: 1;
   }
 </style>

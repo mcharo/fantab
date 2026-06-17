@@ -1,4 +1,4 @@
-import { DEFAULT_SPACE_ICON, type SpaceIconId } from './types';
+import { DEFAULT_SPACE_ICON, type SpaceIcon, type SpaceIconId } from './types';
 
 export interface SpaceIconOption {
   id: SpaceIconId;
@@ -20,12 +20,35 @@ export const SPACE_ICONS: SpaceIconOption[] = [
   { id: 'compass', label: 'Compass' },
 ];
 
+/** Curated emoji palette offered alongside the built-in icons. */
+export const SPACE_EMOJIS: string[] = [
+  '😀', '😎', '🤖', '👾', '🦊', '🐱', '🐶', '🦉',
+  '🌟', '🔥', '⚡', '🌈', '🌙', '☀️', '🌊', '🍀',
+  '🌸', '🌵', '🍎', '🍕', '☕', '🍩', '🎮', '🎧',
+  '🎨', '🎬', '📚', '📝', '💡', '💼', '🚀', '✈️',
+  '🏠', '🏔️', '⚽', '🎯', '❤️', '⭐', '🔑', '🧪',
+];
+
 const SPACE_ICON_IDS = new Set<string>(SPACE_ICONS.map((icon) => icon.id));
 
-export function normalizeSpaceIcon(icon: unknown): SpaceIconId {
-  return typeof icon === 'string' && SPACE_ICON_IDS.has(icon)
-    ? (icon as SpaceIconId)
-    : DEFAULT_SPACE_ICON;
+export function isSpaceIconId(icon: string): icon is SpaceIconId {
+  return SPACE_ICON_IDS.has(icon);
+}
+
+function isEmojiIcon(value: string): boolean {
+  // A single emoji (incl. ZWJ / modifier sequences): short, and containing at
+  // least one pictographic code point so it can't be mistaken for an icon id.
+  if (!value || [...value].length > 8) return false;
+  return /\p{Extended_Pictographic}/u.test(value);
+}
+
+export function normalizeSpaceIcon(icon: unknown): SpaceIcon {
+  if (typeof icon !== 'string') return DEFAULT_SPACE_ICON;
+
+  const trimmed = icon.trim();
+  if (isSpaceIconId(trimmed)) return trimmed;
+  if (isEmojiIcon(trimmed)) return trimmed;
+  return DEFAULT_SPACE_ICON;
 }
 
 export function iconForSpaceIndex(index: number): SpaceIconId {

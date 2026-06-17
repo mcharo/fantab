@@ -16,6 +16,13 @@ export type SpaceIconId =
   | 'grid'
   | 'compass';
 
+/**
+ * A space's icon: either a built-in {@link SpaceIconId} or a single emoji
+ * character. Emoji never collide with the ascii icon ids, so the two are
+ * distinguished at render time via `isSpaceIconId`.
+ */
+export type SpaceIcon = SpaceIconId | (string & {});
+
 export type TabGroupColor =
   | 'blue'
   | 'cyan'
@@ -42,7 +49,7 @@ export interface HomePin {
 export interface Space {
   id: string;
   name: string;
-  icon: SpaceIconId;
+  icon: SpaceIcon;
   homePins: HomePin[];
   createdAt: number;
   order: number;
@@ -51,6 +58,7 @@ export interface Space {
 export interface StoredStateV6 {
   version: typeof STORAGE_VERSION;
   activeSpaceByWindowId: Record<string, string>;
+  lastActiveTabBySpace: Record<string, number>;
   spaces: Space[];
   tabAliases: Record<string, string>;
   tabSpaces: Record<string, string>;
@@ -59,7 +67,7 @@ export interface StoredStateV6 {
 export type SpaceSummary = {
   id: string;
   name: string;
-  icon: SpaceIconId;
+  icon: SpaceIcon;
   order: number;
 };
 

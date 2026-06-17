@@ -1,4 +1,4 @@
-import type { SpaceIconId, TabGroupColor } from './types';
+import type { SpaceIcon, TabGroupColor } from './types';
 
 export interface WindowScopedPayload {
   windowId?: number | null;
@@ -27,6 +27,11 @@ export interface CloseTabMessage {
 export interface MoveTabMessage {
   action: 'MOVE_TAB';
   payload: { tabId: number; index: number } & WindowScopedPayload;
+}
+
+export interface SetTabMutedMessage {
+  action: 'SET_TAB_MUTED';
+  payload: { tabId: number; muted: boolean } & WindowScopedPayload;
 }
 
 export interface CreateHomePinMessage {
@@ -68,14 +73,43 @@ export interface MoveHomePinMessage {
   payload: { homePinId: string; index: number } & WindowScopedPayload;
 }
 
+export interface MoveTabToSpaceMessage {
+  action: 'MOVE_TAB_TO_SPACE';
+  payload: {
+    spaceId: string;
+    tabId?: number;
+    homePinId?: string;
+  } & WindowScopedPayload;
+}
+
+export interface ExportSpaceDataMessage {
+  action: 'EXPORT_SPACE_DATA';
+  payload: WindowScopedPayload;
+}
+
+export interface ImportSpaceDataMessage {
+  action: 'IMPORT_SPACE_DATA';
+  payload: { data: string } & WindowScopedPayload;
+}
+
+export interface ResetSpaceDataMessage {
+  action: 'RESET_SPACE_DATA';
+  payload: WindowScopedPayload;
+}
+
 export interface SwitchSpaceMessage {
   action: 'SWITCH_SPACE';
   payload: { spaceId: string } & WindowScopedPayload;
 }
 
+export interface SwitchSpaceByIndexMessage {
+  action: 'SWITCH_SPACE_BY_INDEX';
+  payload: { index: number } & WindowScopedPayload;
+}
+
 export interface CreateSpaceMessage {
   action: 'CREATE_SPACE';
-  payload: { name: string; icon?: SpaceIconId } & WindowScopedPayload;
+  payload: { name: string; icon?: SpaceIcon } & WindowScopedPayload;
 }
 
 export interface RenameSpaceMessage {
@@ -88,7 +122,7 @@ export interface UpdateSpaceMessage {
   payload: {
     spaceId: string;
     name?: string;
-    icon?: SpaceIconId;
+    icon?: SpaceIcon;
   } & WindowScopedPayload;
 }
 
@@ -165,12 +199,18 @@ export interface UrlCopiedMessage {
   payload: { tabId: number };
 }
 
+export interface ExportSpaceDataResponse {
+  filename: string;
+  data: string;
+}
+
 export type RequestMessage =
   | GetPanelStateMessage
   | CreateTabMessage
   | ActivateTabMessage
   | CloseTabMessage
   | MoveTabMessage
+  | SetTabMutedMessage
   | CreateHomePinMessage
   | RemoveHomePinMessage
   | EditHomePinUrlMessage
@@ -178,7 +218,12 @@ export type RequestMessage =
   | GoHomeMessage
   | ReopenHomePinMessage
   | MoveHomePinMessage
+  | MoveTabToSpaceMessage
+  | ExportSpaceDataMessage
+  | ImportSpaceDataMessage
+  | ResetSpaceDataMessage
   | SwitchSpaceMessage
+  | SwitchSpaceByIndexMessage
   | CreateSpaceMessage
   | RenameSpaceMessage
   | UpdateSpaceMessage

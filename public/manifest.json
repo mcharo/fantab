@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "fantab",
   "description": "Custom tab behaviors: rename tabs, pin URLs, and organize with groups",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "icons": {
     "16": "icons/icon-16.png",
     "32": "icons/icon-32.png",
@@ -41,6 +41,33 @@
         "mac": "Command+Shift+C"
       },
       "description": "Copy current URL"
+    },
+    "switch-space-1": {
+      "description": "Switch to space 1"
+    },
+    "switch-space-2": {
+      "description": "Switch to space 2"
+    },
+    "switch-space-3": {
+      "description": "Switch to space 3"
+    },
+    "switch-space-4": {
+      "description": "Switch to space 4"
+    },
+    "switch-space-5": {
+      "description": "Switch to space 5"
+    },
+    "switch-space-6": {
+      "description": "Switch to space 6"
+    },
+    "switch-space-7": {
+      "description": "Switch to space 7"
+    },
+    "switch-space-8": {
+      "description": "Switch to space 8"
+    },
+    "switch-space-9": {
+      "description": "Switch to space 9"
     }
   },
   "action": {

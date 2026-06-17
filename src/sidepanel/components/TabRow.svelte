@@ -20,6 +20,7 @@
     copied?: boolean;
     onActivate: (tab: PanelTab) => void;
     onClose: (tabId: number) => void;
+    onToggleMute: (tabId: number, muted: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
     onRemoveHomePin: (homePinId: string) => void;
@@ -39,6 +40,7 @@
     copied = false,
     onActivate,
     onClose,
+    onToggleMute,
     onRename,
     onCreateHomePin,
     onRemoveHomePin,
@@ -282,10 +284,6 @@
   </div>
 
   <div class="tools">
-    {#if tab.isAudible}
-      <span class="audio-dot" title={tab.isMuted ? 'Muted' : 'Audible'}></span>
-    {/if}
-
     {#if tab.isHomePin && tab.homePinId}
       <button
         class="tool-btn"
@@ -331,6 +329,25 @@
     {/if}
   </div>
 
+  {#if tab.isAudible && tab.tabId !== null}
+    <button
+      class="audio-btn"
+      class:muted={tab.isMuted}
+      onclick={(event) => {
+        event.stopPropagation();
+        onToggleMute(tab.tabId!, !tab.isMuted);
+        (event.currentTarget as HTMLButtonElement).blur();
+      }}
+      title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
+    >
+      {#if tab.isMuted}
+        <Icon name="volume-x" size={15} />
+      {:else}
+        <span class="audio-dot"></span>
+      {/if}
+    </button>
+  {/if}
+
   {#if copied}
     <span class="copied-badge" aria-hidden="true">
       <Icon name="check" size={13} />
@@ -345,8 +362,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    min-height: 36px;
-    padding: 4px 8px;
+    min-height: var(--tab-row-min-height, 36px);
+    padding: var(--tab-row-pad-y, 4px) 8px;
     border-radius: 999px;
     cursor: default;
     transition:
@@ -518,7 +535,7 @@
   }
 
   :global(.tab-name) {
-    font-size: 15px;
+    font-size: var(--tab-title-font-size, 15px);
     font-weight: 500;
     min-width: 0;
   }
@@ -532,7 +549,7 @@
   }
 
   .tab-row:hover .tools,
-  .tab-row.selected .tools {
+  .tab-row:focus-within .tools {
     opacity: 1;
   }
 
@@ -548,6 +565,22 @@
   }
 
   .tool-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+  }
+
+  .audio-btn {
+    flex: 0 0 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+  }
+
+  .audio-btn:hover {
     background: var(--bg-hover);
     color: var(--text-primary);
   }

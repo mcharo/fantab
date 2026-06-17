@@ -25,6 +25,13 @@
     error?: string;
   }
 
+  interface SwitchSpaceByIndexMessage {
+    action: 'SWITCH_SPACE_BY_INDEX';
+    payload: {
+      index: number;
+    };
+  }
+
   const emptyPolicy: LinkRoutingPolicy = {
     isHomePin: false,
     homeUrl: null,
@@ -243,11 +250,53 @@
     }
   }
 
+  function spaceShortcutIndex(event: KeyboardEvent): number | null {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      !event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey
+    ) {
+      return null;
+    }
+
+    const codeMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+    const digit =
+      codeMatch?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : null);
+    return digit ? Number(digit) - 1 : null;
+  }
+
+  async function switchSpaceByIndex(index: number): Promise<void> {
+    if (!extensionContextValid()) return;
+
+    const message: SwitchSpaceByIndexMessage = {
+      action: 'SWITCH_SPACE_BY_INDEX',
+      payload: { index },
+    };
+
+    try {
+      await chrome.runtime.sendMessage(message);
+    } catch {
+      extensionContextValid();
+    }
+  }
+
   function handlePointerDown(event: PointerEvent): void {
     if (event.button !== 0) return;
     if (!getAnchor(event.target)) return;
 
     void refreshPolicy();
+  }
+
+  function handleKeydown(event: KeyboardEvent): void {
+    const index = spaceShortcutIndex(event);
+    if (index === null) return;
+
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    void switchSpaceByIndex(index);
   }
 
   function handlePageShow(): void {
@@ -267,6 +316,7 @@
   function teardown(): void {
     document.removeEventListener('pointerdown', handlePointerDown, true);
     document.removeEventListener('click', handleClick, true);
+    document.removeEventListener('keydown', handleKeydown, true);
     window.removeEventListener('pageshow', handlePageShow);
     window.removeEventListener('focus', handleFocus);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -329,6 +379,7 @@
 
   document.addEventListener('pointerdown', handlePointerDown, true);
   document.addEventListener('click', handleClick, true);
+  document.addEventListener('keydown', handleKeydown, true);
   window.addEventListener('pageshow', handlePageShow);
   window.addEventListener('focus', handleFocus);
   document.addEventListener('visibilitychange', handleVisibilityChange);

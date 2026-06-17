@@ -1,19 +1,35 @@
 <script lang="ts">
-  import type { BroadcastMessage, RequestMessage } from '../messaging';
+  import type {
+    BroadcastMessage,
+    ExportSpaceDataResponse,
+    RequestMessage,
+  } from '../messaging';
   import { tabMatchesQuery } from '../panelState';
+  import {
+    DEFAULT_DENSITY,
+    DEFAULT_PREFERENCES,
+    DEFAULT_TAB_TITLE_FONT_SIZE,
+    DEFAULT_THEME,
+    type DensityPreference,
+    type ThemePreference,
+    clampTabTitleFontSize,
+    loadPreferences,
+    savePreferences,
+  } from '../preferences';
   import {
     DEFAULT_SPACE_ID,
     type PanelState,
     type PanelTab,
-    type SpaceIconId,
+    type SpaceIcon,
     type TabGroupColor,
   } from '../types';
-  import { promptDialog } from './dialog';
+  import { confirmDialog, promptDialog } from './dialog';
   import ContextMenu, {
     type ContextMenuItem,
   } from './components/ContextMenu.svelte';
   import DialogHost from './components/DialogHost.svelte';
   import Header from './components/Header.svelte';
+  import SettingsDialog from './components/SettingsDialog.svelte';
   import SpaceDock from './components/SpaceDock.svelte';
   import TabList from './components/TabList.svelte';
 
@@ -38,8 +54,15 @@
   let lastActiveTabId: number | null = null;
   let errorMessage = $state<string | null>(null);
   let contextMenu = $state<{ tab: PanelTab; x: number; y: number } | null>(null);
+  let settingsOpen = $state(false);
+  let settingsBusy = $state(false);
+  let settingsStatus = $state<string | null>(null);
+  let settingsError = $state<string | null>(null);
   let copiedKey = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+  let tabTitleFontSize = $state(DEFAULT_TAB_TITLE_FONT_SIZE);
+  let theme = $state<ThemePreference>(DEFAULT_THEME);
+  let density = $state<DensityPreference>(DEFAULT_DENSITY);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -81,6 +104,11 @@
   // list so its right-edge controls stay clear of them.
   const headerFloating = $derived(!(searchOpen || searchQuery.trim().length > 0));
   const listTopInset = $derived(headerFloating && filteredHomePins.length === 0);
+
+  const activeSpace = $derived(
+    panelState.spaces.find((space) => space.id === panelState.activeSpaceId) ??
+      panelState.spaces[0],
+  );
 
   $effect(() => {
     if (visibleTabs.length === 0) {
@@ -147,6 +175,11 @@
         error instanceof Error ? error.message : 'Unable to update tabs';
       return null;
     }
+  }
+
+  async function sendRawMessage<T>(message: RequestMessage): Promise<T> {
+    const windowId = await resolvePanelWindowId();
+    return chrome.runtime.sendMessage(scopeMessageToWindow(message, windowId));
   }
 
   async function refreshPanelState() {
@@ -260,9 +293,139 @@
     contextMenu = null;
   }
 
+  function openSettings() {
+    settingsOpen = true;
+    settingsStatus = null;
+    settingsError = null;
+  }
+
+  function persistPreferences() {
+    void savePreferences({ tabTitleFontSize, theme, density });
+  }
+
+  function setTabTitleFontSize(size: number) {
+    tabTitleFontSize = clampTabTitleFontSize(size);
+    persistPreferences();
+  }
+
+  function setTheme(next: ThemePreference) {
+    theme = next;
+    persistPreferences();
+  }
+
+  function setDensity(next: DensityPreference) {
+    density = next;
+    persistPreferences();
+  }
+
+  function openKeyboardShortcuts() {
+    void chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+  }
+
+  function downloadJsonFile(filename: string, data: string) {
+    const url = URL.createObjectURL(
+      new Blob([data], { type: 'application/json' }),
+    );
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = 'noopener';
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function exportSpaceData() {
+    settingsBusy = true;
+    settingsStatus = null;
+    settingsError = null;
+
+    try {
+      const response = await sendRawMessage<ExportSpaceDataResponse>({
+        action: 'EXPORT_SPACE_DATA',
+        payload: {},
+      });
+      downloadJsonFile(response.filename, response.data);
+      settingsStatus = 'Exported';
+    } catch (error) {
+      settingsError =
+        error instanceof Error ? error.message : 'Unable to export';
+    } finally {
+      settingsBusy = false;
+    }
+  }
+
+  async function importSpaceData(file: File) {
+    const confirmed = await confirmDialog({
+      title: 'Import Space Data',
+      message: 'Replace current fantab spaces with this file?',
+      confirmLabel: 'Import',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    settingsBusy = true;
+    settingsStatus = null;
+    settingsError = null;
+
+    try {
+      const data = await file.text();
+      const nextState = await sendRawMessage<PanelState>({
+        action: 'IMPORT_SPACE_DATA',
+        payload: { data },
+      });
+      panelState = nextState;
+      settingsStatus = 'Imported';
+    } catch (error) {
+      settingsError =
+        error instanceof Error ? error.message : 'Unable to import';
+    } finally {
+      settingsBusy = false;
+    }
+  }
+
+  async function resetToDefaults() {
+    const confirmed = await confirmDialog({
+      title: 'Reset to defaults',
+      message:
+        'This clears all spaces, home pins, and saved settings, returning fantab to a fresh state. Open tabs stay open. This cannot be undone.',
+      confirmLabel: 'Reset',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    settingsBusy = true;
+    settingsStatus = null;
+    settingsError = null;
+
+    try {
+      const nextState = await sendRawMessage<PanelState>({
+        action: 'RESET_SPACE_DATA',
+        payload: {},
+      });
+      panelState = nextState;
+
+      tabTitleFontSize = DEFAULT_PREFERENCES.tabTitleFontSize;
+      theme = DEFAULT_PREFERENCES.theme;
+      density = DEFAULT_PREFERENCES.density;
+      await savePreferences(DEFAULT_PREFERENCES);
+
+      settingsStatus = 'Reset to defaults';
+    } catch (error) {
+      settingsError =
+        error instanceof Error ? error.message : 'Unable to reset';
+    } finally {
+      settingsBusy = false;
+    }
+  }
+
   function contextMenuItems(tab: PanelTab): ContextMenuItem[] {
     const items: ContextMenuItem[] = [];
     const copyTarget = tab.homeUrl ?? tab.url;
+    const targetSpaces = panelState.spaces.filter(
+      (space) => space.id !== panelState.activeSpaceId,
+    );
 
     if (copyTarget) {
       items.push({
@@ -286,6 +449,26 @@
       onSelect: () => void renameViaDialog(tab),
     });
 
+    if (targetSpaces.length > 0 && (tab.homePinId || tab.tabId !== null)) {
+      items.push({ type: 'separator' });
+
+      for (const space of targetSpaces) {
+        items.push({
+          type: 'action',
+          label: `Move to ${space.name}`,
+          onSelect: () =>
+            void sendMessage({
+              action: 'MOVE_TAB_TO_SPACE',
+              payload: {
+                spaceId: space.id,
+                tabId: tab.tabId ?? undefined,
+                homePinId: tab.homePinId ?? undefined,
+              },
+            }),
+        });
+      }
+    }
+
     if (!tab.isHomePin && tab.tabId !== null) {
       items.push({
         type: 'action',
@@ -300,6 +483,18 @@
         type: 'action',
         label: 'New group from tab',
         onSelect: () => void createGroupFromTab(tab.tabId!),
+      });
+    }
+
+    if (tab.isOpen && tab.tabId !== null) {
+      items.push({
+        type: 'action',
+        label: tab.isMuted ? 'Unmute tab' : 'Mute tab',
+        onSelect: () =>
+          void sendMessage({
+            action: 'SET_TAB_MUTED',
+            payload: { tabId: tab.tabId!, muted: !tab.isMuted },
+          }),
       });
     }
 
@@ -359,7 +554,7 @@
     });
   }
 
-  async function createSpace(name: string, icon: SpaceIconId) {
+  async function createSpace(name: string, icon: SpaceIcon) {
     selectedKey = null;
     await sendMessage({
       action: 'CREATE_SPACE',
@@ -369,7 +564,7 @@
 
   async function updateSpace(
     spaceId: string,
-    updates: { name?: string; icon?: SpaceIconId },
+    updates: { name?: string; icon?: SpaceIcon },
   ) {
     await sendMessage({
       action: 'UPDATE_SPACE',
@@ -385,7 +580,40 @@
     });
   }
 
+  function spaceShortcutIndex(event: KeyboardEvent): number | null {
+    if (
+      event.defaultPrevented ||
+      event.isComposing ||
+      !event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      event.shiftKey
+    ) {
+      return null;
+    }
+
+    const codeMatch = /^(?:Digit|Numpad)([1-9])$/.exec(event.code);
+    const digit =
+      codeMatch?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : null);
+    return digit ? Number(digit) - 1 : null;
+  }
+
+  async function switchSpaceByIndex(index: number) {
+    selectedKey = null;
+    await sendMessage({
+      action: 'SWITCH_SPACE_BY_INDEX',
+      payload: { index },
+    });
+  }
+
   async function handleKeydown(event: KeyboardEvent) {
+    const spaceIndex = spaceShortcutIndex(event);
+    if (spaceIndex !== null) {
+      event.preventDefault();
+      await switchSpaceByIndex(spaceIndex);
+      return;
+    }
+
     const target = event.target as HTMLElement | null;
     const isTextInput =
       target instanceof HTMLInputElement ||
@@ -440,7 +668,29 @@
   }
 
   $effect(() => {
+    document.documentElement.style.setProperty(
+      '--tab-title-font-size',
+      `${tabTitleFontSize}px`,
+    );
+  });
+
+  $effect(() => {
+    const root = document.documentElement;
+    if (theme === 'system') delete root.dataset.theme;
+    else root.dataset.theme = theme;
+  });
+
+  $effect(() => {
+    document.documentElement.dataset.density = density;
+  });
+
+  $effect(() => {
     void refreshPanelState();
+    void loadPreferences().then((prefs) => {
+      tabTitleFontSize = prefs.tabTitleFontSize;
+      theme = prefs.theme;
+      density = prefs.density;
+    });
 
     const onMessage = (message: BroadcastMessage) => {
       if (message.action === 'PANEL_STATE_UPDATED') {
@@ -465,6 +715,7 @@
     {searchQuery}
     bind:searchOpen
     onSearchChange={(query) => (searchQuery = query)}
+    onOpenSettings={openSettings}
     onCreateTab={() => sendMessage({ action: 'CREATE_TAB', payload: {} })}
     onCreateGroup={createGroupFromActiveTab}
     canCreateGroup={panelState.activeTabId !== null}
@@ -478,12 +729,16 @@
     homePins={filteredHomePins}
     groups={filteredGroups}
     ungroupedTabs={filteredUngroupedTabs}
+    spaceName={activeSpace?.name ?? ''}
+    spaceIcon={activeSpace?.icon ?? 'circle'}
     topInset={listTopInset}
     {selectedKey}
     {copiedKey}
     onActivate={activateTab}
     onClose={(tabId) =>
       sendMessage({ action: 'CLOSE_TAB', payload: { tabId } })}
+    onToggleMute={(tabId, muted) =>
+      sendMessage({ action: 'SET_TAB_MUTED', payload: { tabId, muted } })}
     onRename={renameTab}
     onCreateHomePin={(tabId) =>
       sendMessage({ action: 'CREATE_HOME_PIN', payload: { tabId } })}
@@ -528,6 +783,25 @@
       y={contextMenu.y}
       items={contextMenuItems(contextMenu.tab)}
       onClose={closeContextMenu}
+    />
+  {/if}
+
+  {#if settingsOpen}
+    <SettingsDialog
+      busy={settingsBusy}
+      statusMessage={settingsStatus}
+      errorMessage={settingsError}
+      {tabTitleFontSize}
+      {theme}
+      {density}
+      onClose={() => (settingsOpen = false)}
+      onExport={exportSpaceData}
+      onImport={importSpaceData}
+      onReset={resetToDefaults}
+      onTabTitleFontSizeChange={setTabTitleFontSize}
+      onThemeChange={setTheme}
+      onDensityChange={setDensity}
+      onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}
 

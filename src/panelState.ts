@@ -231,12 +231,16 @@ export interface CloseFocusTab {
   windowId: number | null;
   active: boolean;
   inActiveSpace: boolean;
+  /** `chrome.tabs.Tab.lastAccessed` (ms since epoch); 0 if never activated. */
+  lastAccessed: number;
 }
 
 /**
  * When the active tab is among those being closed, pick the tab that should
  * receive focus so we stay within the active space instead of letting Chrome
- * jump to an adjacent tab from another space. Returns null when no explicit
+ * jump to an adjacent tab from another space. Prefers the most recently active
+ * tab in the space (the one the user was last on); when there's no activation
+ * history, falls back to tab-strip proximity. Returns null when no explicit
  * activation is needed (the active tab isn't closing, or there's no same-space
  * tab left to focus).
  */
@@ -251,18 +255,24 @@ export function nextFocusTabIdAfterClose(
   const activeTab = tabs.find((tab) => tab.active && inWindow(tab));
   if (!activeTab || !closingTabIds.has(activeTab.id)) return null;
 
-  const candidates = tabs
-    .filter(
-      (tab) => inWindow(tab) && tab.inActiveSpace && !closingTabIds.has(tab.id),
-    )
-    .sort((a, b) => a.index - b.index);
+  const candidates = tabs.filter(
+    (tab) => inWindow(tab) && tab.inActiveSpace && !closingTabIds.has(tab.id),
+  );
 
   if (candidates.length === 0) return null;
 
-  // Prefer the nearest tab after the one being closed, else the nearest before.
+  // Prefer the most recently active tab in the space.
+  const mostRecent = candidates.reduce((best, tab) =>
+    tab.lastAccessed > best.lastAccessed ? tab : best,
+  );
+  if (mostRecent.lastAccessed > 0) return mostRecent.id;
+
+  // No activation history: fall back to the nearest tab after the one being
+  // closed, else the nearest before.
+  const byIndex = [...candidates].sort((a, b) => a.index - b.index);
   return (
-    candidates.find((tab) => tab.index > activeTab.index)?.id ??
-    candidates[candidates.length - 1].id
+    byIndex.find((tab) => tab.index > activeTab.index)?.id ??
+    byIndex[byIndex.length - 1].id
   );
 }
 

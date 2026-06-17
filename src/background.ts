@@ -1,10 +1,15 @@
 import type {
   ContentRequestMessage,
+  ExportSpaceDataResponse,
   LinkRoutingPolicy,
   Message,
   OpenExternalLinkFromHomePinResponse,
   RequestMessage,
 } from './messaging';
+import {
+  buildPortableSpaceData,
+  parsePortableSpaceData,
+} from './portableSpaceData';
 import { isAtHome, isSameSiteAsHomeUrl, normalizeHomeUrl } from './lib/url';
 import {
   buildPanelState,
@@ -23,15 +28,19 @@ import type {
 import {
   addHomePin,
   assignTabToSpace,
+  createDefaultState,
   createSpace,
   deleteSpace,
   findHomePinById,
   findHomePinByTabId,
   getActiveSpace,
+  getRememberedActiveTabId,
   generateId,
   loadState,
   moveHomePin,
+  moveHomePinToSpace,
   reconcileStateForTabs,
+  rememberActiveTabForSpace,
   removeHomePin,
   removeTabAlias,
   renameSpace,
@@ -46,6 +55,7 @@ import {
 const DEFAULT_GROUP_TITLE = 'New Group';
 const DEFAULT_GROUP_COLOR = 'blue';
 const COPY_CURRENT_URL_COMMAND = 'copy-current-url';
+const SWITCH_SPACE_COMMAND_PREFIX = 'switch-space-';
 const OFFSCREEN_DOCUMENT_PATH = 'offscreen.html';
 const BLANK_PAGE_PATH = 'blank.html';
 const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
@@ -54,6 +64,7 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'ACTIVATE_TAB',
   'CLOSE_TAB',
   'MOVE_TAB',
+  'SET_TAB_MUTED',
   'CREATE_HOME_PIN',
   'REMOVE_HOME_PIN',
   'EDIT_HOME_PIN_URL',
@@ -61,7 +72,12 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'GO_HOME',
   'REOPEN_HOME_PIN',
   'MOVE_HOME_PIN',
+  'MOVE_TAB_TO_SPACE',
+  'EXPORT_SPACE_DATA',
+  'IMPORT_SPACE_DATA',
+  'RESET_SPACE_DATA',
   'SWITCH_SPACE',
+  'SWITCH_SPACE_BY_INDEX',
   'CREATE_SPACE',
   'RENAME_SPACE',
   'UPDATE_SPACE',
@@ -405,6 +421,19 @@ function visibleOpenPanelTabs(
   );
 }
 
+function openPanelTabs(
+  panelState: PanelState,
+): Array<PanelTab & { tabId: number }> {
+  return [
+    ...panelState.homePins,
+    ...panelState.groups.flatMap((group) => group.tabs),
+    ...panelState.ungroupedTabs,
+  ].filter(
+    (tab): tab is PanelTab & { tabId: number } =>
+      tab.isOpen && typeof tab.tabId === 'number',
+  );
+}
+
 function hasVisibleActiveTab(panelState: PanelState): boolean {
   return visibleOpenPanelTabs(panelState).some(
     (tab) => tab.tabId === panelState.activeTabId,
@@ -416,6 +445,19 @@ async function activateFirstVisibleTab(panelState: PanelState): Promise<boolean>
   if (!firstVisibleTab) return false;
 
   await chrome.tabs.update(firstVisibleTab.tabId, { active: true });
+  return true;
+}
+
+async function activateOpenPanelTab(
+  panelState: PanelState,
+  tabId: number | null | undefined,
+): Promise<boolean> {
+  if (typeof tabId !== 'number') return false;
+  if (!openPanelTabs(panelState).some((tab) => tab.tabId === tabId)) {
+    return false;
+  }
+
+  await chrome.tabs.update(tabId, { active: true });
   return true;
 }
 
@@ -444,11 +486,14 @@ async function createTabInWindow(
 async function focusVisibleTabInSpace(
   spaceId: string,
   windowId?: number | null,
+  preferredTabId?: number | null,
 ): Promise<PanelState> {
   let panelState = await getPanelState(windowId);
 
   if (!hasVisibleActiveTab(panelState)) {
-    const activatedExistingTab = await activateFirstVisibleTab(panelState);
+    const activatedExistingTab =
+      (await activateOpenPanelTab(panelState, preferredTabId)) ||
+      (await activateFirstVisibleTab(panelState));
 
     // No tab is open for this space — park on the blank page rather than
     // reopening a closed pin, so switching in is transparent.
@@ -460,6 +505,34 @@ async function focusVisibleTabInSpace(
   }
 
   return panelState;
+}
+
+function tabBelongsToSpace(
+  state: StoredStateV6,
+  tabId: number,
+  space: Space,
+): boolean {
+  return (
+    space.homePins.some((pin) => pin.tabId === tabId) ||
+    state.tabSpaces[String(tabId)] === space.id
+  );
+}
+
+function rememberActiveTabIfInSpace(
+  state: StoredStateV6,
+  tab: chrome.tabs.Tab | undefined,
+  space: Space,
+): StoredStateV6 {
+  if (
+    typeof tab?.id !== 'number' ||
+    typeof tab.windowId !== 'number' ||
+    isPlaceholderTab(tab) ||
+    !tabBelongsToSpace(state, tab.id, space)
+  ) {
+    return state;
+  }
+
+  return rememberActiveTabForSpace(state, tab.windowId, space.id, tab.id);
 }
 
 async function handleCreateSpace(
@@ -699,6 +772,7 @@ function buildFocusTabs(
       index: tab.index ?? 0,
       windowId: tab.windowId ?? null,
       active: !!tab.active,
+      lastAccessed: tab.lastAccessed ?? 0,
       inActiveSpace:
         homePinTabIds.has(tab.id) ||
         state.tabSpaces[String(tab.id)] === activeSpace.id,
@@ -826,24 +900,143 @@ async function handleCloseGroup(
   return getPanelState(windowId);
 }
 
-async function handleSwitchSpace(
-  spaceId: string,
-  windowId?: number | null,
+async function handleMoveTabToSpace(
+  payload: Extract<RequestMessage, { action: 'MOVE_TAB_TO_SPACE' }>['payload'],
 ): Promise<PanelState> {
-  const resolvedWindowId = await resolveWindowId(windowId);
-  let state = switchSpace(
-    await loadReconciledState(await chrome.tabs.query({})),
-    spaceId,
+  const resolvedWindowId = await resolveWindowId(payload.windowId);
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const activeSpaceId = getActiveSpace(state, resolvedWindowId).id;
+
+  if (payload.homePinId) {
+    state = moveHomePinToSpace(state, payload.homePinId, payload.spaceId);
+  } else if (typeof payload.tabId === 'number') {
+    state = assignTabToSpace(state, payload.tabId, payload.spaceId);
+  }
+
+  await saveState(state);
+  const panelState = await focusVisibleTabInSpace(
+    activeSpaceId,
     resolvedWindowId,
   );
-  await saveState(state);
-
-  const panelState = await focusVisibleTabInSpace(spaceId, resolvedWindowId);
 
   await broadcastPanelState();
   void broadcastLinkRoutingPolicies();
 
   return panelState;
+}
+
+async function handleExportSpaceData(): Promise<ExportSpaceDataResponse> {
+  const allTabs = await chrome.tabs.query({});
+  const state = await loadReconciledState(allTabs);
+  const exportedAt = new Date();
+  const data = buildPortableSpaceData({
+    state,
+    tabs: allTabs,
+    blankUrl: placeholderUrl(),
+    exportedAt,
+  });
+  const date = exportedAt.toISOString().slice(0, 10);
+
+  return {
+    filename: `fantab-spaces-${date}.json`,
+    data: `${JSON.stringify(data, null, 2)}\n`,
+  };
+}
+
+async function handleImportSpaceData(
+  payload: Extract<RequestMessage, { action: 'IMPORT_SPACE_DATA' }>['payload'],
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(payload.windowId);
+  const imported = parsePortableSpaceData(payload.data);
+  let state = switchSpace(
+    imported.state,
+    imported.state.spaces[0].id,
+    resolvedWindowId,
+  );
+
+  await saveState(state);
+
+  for (const importedTab of imported.regularTabs) {
+    try {
+      const tab = await chrome.tabs.create(
+        typeof resolvedWindowId === 'number'
+          ? {
+              active: false,
+              url: importedTab.url,
+              windowId: resolvedWindowId,
+            }
+          : { active: false, url: importedTab.url },
+      );
+
+      if (typeof tab.id !== 'number') continue;
+
+      state = assignTabToSpace(state, tab.id, importedTab.spaceId);
+      if (importedTab.alias) {
+        state = renameTabAlias(state, tab.id, importedTab.alias);
+      }
+    } catch {
+      // Some URLs may be browser-restricted on the importing machine.
+    }
+  }
+
+  await saveState(state);
+  const panelState = await focusVisibleTabInSpace(
+    getActiveSpace(state, resolvedWindowId).id,
+    resolvedWindowId,
+  );
+
+  await broadcastPanelState();
+  void broadcastLinkRoutingPolicies();
+
+  return panelState;
+}
+
+async function handleSwitchSpace(
+  spaceId: string,
+  windowId?: number | null,
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(windowId);
+  const allTabs = await chrome.tabs.query({});
+  let state = await loadReconciledState(allTabs);
+  const outgoingSpace = getActiveSpace(state, resolvedWindowId);
+  const outgoingActiveTab = allTabs.find(
+    (tab) => tab.active && tab.windowId === resolvedWindowId,
+  );
+
+  state = rememberActiveTabIfInSpace(state, outgoingActiveTab, outgoingSpace);
+  state = switchSpace(state, spaceId, resolvedWindowId);
+  const targetSpace = getActiveSpace(state, resolvedWindowId);
+
+  const preferredTabId = getRememberedActiveTabId(
+    state,
+    resolvedWindowId,
+    targetSpace.id,
+  );
+  await saveState(state);
+
+  const panelState = await focusVisibleTabInSpace(
+    targetSpace.id,
+    resolvedWindowId,
+    preferredTabId,
+  );
+
+  await broadcastPanelState();
+  void broadcastLinkRoutingPolicies();
+
+  return panelState;
+}
+
+async function handleSwitchSpaceByIndex(
+  index: number,
+  windowId?: number | null,
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(windowId);
+  const state = await loadReconciledState(await chrome.tabs.query({}));
+  const sortedSpaces = [...state.spaces].sort((a, b) => a.order - b.order);
+  const targetSpace = sortedSpaces[index];
+
+  if (!targetSpace) return getPanelState(resolvedWindowId);
+  return handleSwitchSpace(targetSpace.id, resolvedWindowId);
 }
 
 async function handleContentMessage(
@@ -916,7 +1109,10 @@ async function handleOpenExternalLinkFromHomePin(
   return { opened: true };
 }
 
-async function handleMessage(message: RequestMessage): Promise<PanelState> {
+async function handleMessage(
+  message: RequestMessage,
+  sender?: chrome.runtime.MessageSender,
+): Promise<PanelState | ExportSpaceDataResponse> {
   switch (message.action) {
     case 'GET_PANEL_STATE':
       return getPanelState(message.payload.windowId);
@@ -927,6 +1123,11 @@ async function handleMessage(message: RequestMessage): Promise<PanelState> {
       return getPanelState(message.payload.windowId);
     case 'CLOSE_TAB':
       return handleCloseTab(message.payload.tabId, message.payload.windowId);
+    case 'SET_TAB_MUTED':
+      await chrome.tabs.update(message.payload.tabId, {
+        muted: message.payload.muted,
+      });
+      return getPanelState(message.payload.windowId);
     case 'MOVE_TAB':
       await chrome.tabs.move(message.payload.tabId, {
         index: message.payload.index,
@@ -973,10 +1174,23 @@ async function handleMessage(message: RequestMessage): Promise<PanelState> {
           message.payload.windowId,
         );
       }
+    case 'MOVE_TAB_TO_SPACE':
+      return handleMoveTabToSpace(message.payload);
+    case 'EXPORT_SPACE_DATA':
+      return handleExportSpaceData();
+    case 'IMPORT_SPACE_DATA':
+      return handleImportSpaceData(message.payload);
+    case 'RESET_SPACE_DATA':
+      return saveAndBroadcast(createDefaultState(), message.payload.windowId);
     case 'SWITCH_SPACE':
       return handleSwitchSpace(
         message.payload.spaceId,
         message.payload.windowId,
+      );
+    case 'SWITCH_SPACE_BY_INDEX':
+      return handleSwitchSpaceByIndex(
+        message.payload.index,
+        message.payload.windowId ?? sender?.tab?.windowId,
       );
     case 'CREATE_SPACE':
       return handleCreateSpace(
@@ -1039,7 +1253,7 @@ async function handleMessage(message: RequestMessage): Promise<PanelState> {
 
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   if (isRequestMessage(message)) {
-    handleMessage(message).then(sendResponse);
+    handleMessage(message, sender).then(sendResponse);
     return true;
   }
 
@@ -1091,10 +1305,37 @@ async function handleTabRemoved(
   void broadcastPanelState();
 }
 
+async function rememberActivatedTab(
+  tabId: number,
+  windowId: number,
+): Promise<void> {
+  const allTabs = await chrome.tabs.query({});
+  const activeTab = allTabs.find((tab) => tab.id === tabId);
+  if (!activeTab) return;
+
+  const state = await loadReconciledState(allTabs);
+  const activeSpace = getActiveSpace(state, windowId);
+  const nextState = rememberActiveTabIfInSpace(state, activeTab, activeSpace);
+
+  if (!statesEqual(state, nextState)) {
+    await saveState(nextState);
+  }
+}
+
+function spaceIndexFromCommand(command: string): number | null {
+  if (!command.startsWith(SWITCH_SPACE_COMMAND_PREFIX)) return null;
+
+  const rawIndex = Number(command.slice(SWITCH_SPACE_COMMAND_PREFIX.length));
+  if (!Number.isInteger(rawIndex) || rawIndex < 1 || rawIndex > 9) return null;
+
+  return rawIndex - 1;
+}
+
 chrome.tabs.onActivated.addListener((activeInfo) => {
   void chrome.storage.session.set({
     [activeTabKey(activeInfo.windowId)]: activeInfo.tabId,
   });
+  void rememberActivatedTab(activeInfo.tabId, activeInfo.windowId);
   void cleanupPlaceholders();
   void broadcastPanelState();
 });
@@ -1116,6 +1357,14 @@ chrome.tabGroups.onUpdated.addListener(broadcastSoon);
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === COPY_CURRENT_URL_COMMAND) {
     void handleCopyCurrentUrlCommand(tab).catch(() => {
+      void flashActionBadge(tab?.id, 'ERR', '#b91c1c');
+    });
+    return;
+  }
+
+  const spaceIndex = spaceIndexFromCommand(command);
+  if (spaceIndex !== null) {
+    void handleSwitchSpaceByIndex(spaceIndex, tab?.windowId).catch(() => {
       void flashActionBadge(tab?.id, 'ERR', '#b91c1c');
     });
   }

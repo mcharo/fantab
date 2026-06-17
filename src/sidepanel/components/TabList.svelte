@@ -1,7 +1,13 @@
 <script lang="ts">
-  import type { PanelGroup, PanelTab, TabGroupColor } from '../../types';
+  import type {
+    PanelGroup,
+    PanelTab,
+    SpaceIcon,
+    TabGroupColor,
+  } from '../../types';
   import GroupHeader from './GroupHeader.svelte';
   import Icon from './Icon.svelte';
+  import SpaceGlyph from './SpaceGlyph.svelte';
   import TabRow from './TabRow.svelte';
 
   type DropPosition = 'before' | 'after';
@@ -10,11 +16,14 @@
     homePins: PanelTab[];
     groups: PanelGroup[];
     ungroupedTabs: PanelTab[];
+    spaceName: string;
+    spaceIcon: SpaceIcon;
     topInset?: boolean;
     selectedKey: string | null;
     copiedKey: string | null;
     onActivate: (tab: PanelTab) => void;
     onClose: (tabId: number) => void;
+    onToggleMute: (tabId: number, muted: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
     onRemoveHomePin: (homePinId: string) => void;
@@ -35,11 +44,14 @@
     homePins,
     groups,
     ungroupedTabs,
+    spaceName,
+    spaceIcon,
     topInset = false,
     selectedKey,
     copiedKey,
     onActivate,
     onClose,
+    onToggleMute,
     onRename,
     onCreateHomePin,
     onRemoveHomePin,
@@ -105,16 +117,23 @@
   ondrop={handleUngroupedDrop}
 >
   {#if homePins.length > 0}
-    <div class="section-header">
-      <button
-        class="toggle-btn"
-        onclick={() => (pinnedCollapsed = !pinnedCollapsed)}
-        title={pinnedCollapsed ? 'Expand pinned' : 'Collapse pinned'}
-      >
-        <Icon name={pinnedCollapsed ? 'chevron-right' : 'chevron-down'} size={14} />
-      </button>
-      <div class="section-label">Pinned</div>
-    </div>
+    <button
+      class="section-header"
+      aria-expanded={!pinnedCollapsed}
+      onclick={() => (pinnedCollapsed = !pinnedCollapsed)}
+      title={pinnedCollapsed ? `Expand ${spaceName}` : `Collapse ${spaceName}`}
+    >
+      <span class="section-glyph">
+        <span class="glyph"><SpaceGlyph icon={spaceIcon} size={16} /></span>
+        <span class="chevron">
+          <Icon
+            name={pinnedCollapsed ? 'chevron-right' : 'chevron-down'}
+            size={14}
+          />
+        </span>
+      </span>
+      <span class="section-label">{spaceName}</span>
+    </button>
 
     {#if !pinnedCollapsed}
       <div class="section">
@@ -125,6 +144,7 @@
             copied={copiedKey === tab.key}
             {onActivate}
             {onClose}
+            {onToggleMute}
             {onRename}
             {onCreateHomePin}
             {onRemoveHomePin}
@@ -154,6 +174,7 @@
             copied={copiedKey === tab.key}
             {onActivate}
             {onClose}
+            {onToggleMute}
             {onRename}
             {onCreateHomePin}
             {onRemoveHomePin}
@@ -229,30 +250,58 @@
   .section-header {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    width: 100%;
     padding: 12px 8px 5px;
+    text-align: left;
   }
 
-  .toggle-btn {
+  .section-glyph {
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
+    flex: 0 0 18px;
     width: 18px;
     height: 18px;
-    border-radius: var(--radius-sm);
     color: var(--text-secondary);
   }
 
-  .toggle-btn:hover {
-    background: var(--bg-hover);
+  .section-glyph .glyph,
+  .section-glyph .chevron {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .section-glyph .chevron {
+    display: none;
+  }
+
+  .section-header:hover .section-glyph .glyph {
+    display: none;
+  }
+
+  .section-header:hover .section-glyph .chevron {
+    display: flex;
+  }
+
+  .section-header:hover .section-glyph {
+    color: var(--text-primary);
   }
 
   .section-label {
-    color: var(--text-tertiary);
-    font-size: 11px;
+    min-width: 0;
+    color: var(--text-secondary);
+    font-size: 12px;
     font-weight: 700;
-    letter-spacing: 0.4px;
-    text-transform: uppercase;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .section-header:hover .section-label {
+    color: var(--text-primary);
   }
 
   .empty {
