@@ -146,6 +146,22 @@
   }
 
   $effect(() => {
+    const activeId = panelState.activeTabId;
+
+    // The user re-activated (via Chrome's tab strip) a tab that's mid-close — it
+    // is still live, so cancel the deferred close and let those tabs reappear.
+    // Gated on an actual change so the tab already active at "Close all" time
+    // doesn't immediately rescue itself.
+    if (
+      activeId !== lastActiveTabId &&
+      activeId !== null &&
+      pendingCloseTabIds.has(activeId)
+    ) {
+      lastActiveTabId = activeId;
+      restoreClosedTabs();
+      return;
+    }
+
     if (visibleTabs.length === 0) {
       if (selectedKeys.size > 0) selectedKeys = new Set();
       if (selectionAnchor !== null) selectionAnchor = null;

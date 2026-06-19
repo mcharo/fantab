@@ -543,6 +543,13 @@ function tabBelongsToSpace(
   );
 }
 
+function spaceIdForTab(state: StoredStateV6, tabId: number): string | null {
+  const space = state.spaces.find((candidate) =>
+    tabBelongsToSpace(state, tabId, candidate),
+  );
+  return space?.id ?? null;
+}
+
 function rememberActiveTabIfInSpace(
   state: StoredStateV6,
   tab: chrome.tabs.Tab | undefined,
@@ -1693,14 +1700,30 @@ async function rememberActivatedTab(
 ): Promise<void> {
   const allTabs = await chrome.tabs.query({});
   const activeTab = allTabs.find((tab) => tab.id === tabId);
-  if (!activeTab) return;
+  if (!activeTab || isPlaceholderTab(activeTab)) return;
 
   const state = await loadReconciledState(allTabs);
-  const activeSpace = getActiveSpace(state, windowId);
-  const nextState = rememberActiveTabIfInSpace(state, activeTab, activeSpace);
+  const activeSpaceId = getActiveSpace(state, windowId).id;
+  const tabSpaceId = spaceIdForTab(state, tabId);
+
+  // Activating a tab from another space via Chrome's own UI should pull the side
+  // panel over to that tab's space, so the panel always mirrors the live tab.
+  const spaceChanged = tabSpaceId !== null && tabSpaceId !== activeSpaceId;
+  let nextState = spaceChanged
+    ? switchSpace(state, tabSpaceId, windowId)
+    : state;
+
+  nextState = rememberActiveTabIfInSpace(
+    nextState,
+    activeTab,
+    getActiveSpace(nextState, windowId),
+  );
 
   if (!statesEqual(state, nextState)) {
     await saveState(nextState);
+    // The immediate broadcast in onActivated raced the save above; re-broadcast
+    // so an open panel actually picks up the space switch.
+    if (spaceChanged) await broadcastPanelState();
   }
 }
 
