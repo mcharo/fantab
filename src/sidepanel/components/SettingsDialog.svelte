@@ -20,6 +20,7 @@
     density: DensityPreference;
     syncEnabled: boolean;
     closeAllRestoreSeconds: number;
+    closeAllHoldToConfirm: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -29,6 +30,7 @@
     onDensityChange: (density: DensityPreference) => void;
     onSyncEnabledChange: (enabled: boolean) => void;
     onCloseAllRestoreSecondsChange: (seconds: number) => void;
+    onCloseAllHoldToConfirmChange: (hold: boolean) => void;
     onEditShortcuts: () => void;
   }
 
@@ -41,6 +43,7 @@
     density,
     syncEnabled,
     closeAllRestoreSeconds,
+    closeAllHoldToConfirm,
     onClose,
     onExport,
     onImport,
@@ -50,6 +53,7 @@
     onDensityChange,
     onSyncEnabledChange,
     onCloseAllRestoreSecondsChange,
+    onCloseAllHoldToConfirmChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -178,6 +182,23 @@
         <h3>Tabs</h3>
         <p class="group-desc">Behavior when closing tabs.</p>
       </div>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title">Hold “Close all” to confirm</span>
+          <span class="toggle-hint">When off, a single click closes them.</span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={closeAllHoldToConfirm}
+          onchange={(event) =>
+            onCloseAllHoldToConfirmChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
 
       <div class="field">
         <div class="field-head">

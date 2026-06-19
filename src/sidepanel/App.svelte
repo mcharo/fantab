@@ -78,6 +78,9 @@
     DEFAULT_PREFERENCES.closeAllRestoreSeconds,
   );
   const closeAllRestoreMs = $derived(closeAllRestoreSeconds * 1000);
+  let closeAllHoldToConfirm = $state(
+    DEFAULT_PREFERENCES.closeAllHoldToConfirm,
+  );
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -440,6 +443,7 @@
       density,
       syncEnabled,
       closeAllRestoreSeconds,
+      closeAllHoldToConfirm,
     });
   }
 
@@ -465,6 +469,11 @@
 
   function setCloseAllRestoreSeconds(seconds: number) {
     closeAllRestoreSeconds = clampCloseAllRestoreSeconds(seconds);
+    persistPreferences();
+  }
+
+  function setCloseAllHoldToConfirm(next: boolean) {
+    closeAllHoldToConfirm = next;
     persistPreferences();
   }
 
@@ -561,6 +570,7 @@
       density = DEFAULT_PREFERENCES.density;
       syncEnabled = DEFAULT_PREFERENCES.syncEnabled;
       closeAllRestoreSeconds = DEFAULT_PREFERENCES.closeAllRestoreSeconds;
+      closeAllHoldToConfirm = DEFAULT_PREFERENCES.closeAllHoldToConfirm;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -924,6 +934,7 @@
       density = prefs.density;
       syncEnabled = prefs.syncEnabled;
       closeAllRestoreSeconds = prefs.closeAllRestoreSeconds;
+      closeAllHoldToConfirm = prefs.closeAllHoldToConfirm;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -1005,6 +1016,7 @@
     closeAllPending={pendingCloseTabIds.size > 0}
     closeAllPendingCount={pendingCloseTabIds.size}
     {closeAllRestoreMs}
+    {closeAllHoldToConfirm}
     onCloseAll={confirmCloseAll}
     onRestoreClosed={restoreClosedTabs}
   />
@@ -1037,6 +1049,7 @@
       {density}
       {syncEnabled}
       {closeAllRestoreSeconds}
+      {closeAllHoldToConfirm}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -1046,6 +1059,7 @@
       onDensityChange={setDensity}
       onSyncEnabledChange={setSyncEnabled}
       onCloseAllRestoreSecondsChange={setCloseAllRestoreSeconds}
+      onCloseAllHoldToConfirmChange={setCloseAllHoldToConfirm}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

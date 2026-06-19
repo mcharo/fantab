@@ -8,6 +8,8 @@
     pending: boolean;
     /** How many tabs are pending close (shown on the restore button). */
     pendingCount: number;
+    /** When false, a single click confirms instead of a hold gesture. */
+    holdToConfirm?: boolean;
     /** Hold-to-confirm duration in ms. */
     holdMs?: number;
     /** Restore-window duration in ms (drives the depleting countdown). */
@@ -20,6 +22,7 @@
     count,
     pending,
     pendingCount,
+    holdToConfirm = true,
     holdMs = 650,
     restoreMs = 5000,
     onConfirm,
@@ -83,7 +86,7 @@
         Restore {tabsLabel(pendingCount)}
       </span>
     </button>
-  {:else}
+  {:else if holdToConfirm}
     <button
       type="button"
       class="action confirm"
@@ -100,7 +103,20 @@
       <span class="fill" aria-hidden="true"></span>
       <span class="label">
         Close all
-        <Icon name="chevron-down" size={13} />
+        <Icon name="arrow-down" size={13} />
+      </span>
+    </button>
+  {:else}
+    <button
+      type="button"
+      class="action confirm immediate"
+      onclick={onConfirm}
+      title={`Close all ${tabsLabel(count)} below`}
+      aria-label={`Close all ${tabsLabel(count)} below`}
+    >
+      <span class="label">
+        Close all
+        <Icon name="arrow-down" size={13} />
       </span>
     </button>
   {/if}
@@ -182,6 +198,13 @@
 
   .confirm.ready .fill {
     background: color-mix(in srgb, var(--danger-text) 22%, var(--danger-bg));
+  }
+
+  /* Immediate (molly guard off): a plain click, hinted as destructive on hover. */
+  .confirm.immediate:hover {
+    color: var(--danger-text);
+    border-color: color-mix(in srgb, var(--danger-text) 45%, var(--border-color));
+    background: var(--bg-primary);
   }
 
   /* Restore countdown */

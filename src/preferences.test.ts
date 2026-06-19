@@ -81,7 +81,18 @@ describe('normalizePreferences', () => {
       density: 'compact',
       syncEnabled: false,
       closeAllRestoreSeconds: 5,
+      closeAllHoldToConfirm: true,
     });
+  });
+
+  it('defaults closeAllHoldToConfirm on and keeps explicit booleans', () => {
+    expect(normalizePreferences({}).closeAllHoldToConfirm).toBe(true);
+    expect(
+      normalizePreferences({ closeAllHoldToConfirm: 'no' }).closeAllHoldToConfirm,
+    ).toBe(true);
+    expect(
+      normalizePreferences({ closeAllHoldToConfirm: false }).closeAllHoldToConfirm,
+    ).toBe(false);
   });
 
   it('clamps the close-all restore window', () => {
@@ -121,6 +132,7 @@ describe('loadPreferences / savePreferences', () => {
       density: DEFAULT_DENSITY,
       syncEnabled: false,
       closeAllRestoreSeconds: 5,
+      closeAllHoldToConfirm: true,
     });
     expect(get).toHaveBeenCalledWith(PREFERENCES_KEY);
   });
@@ -145,6 +157,7 @@ describe('loadPreferences / savePreferences', () => {
       density: 'compact',
       syncEnabled: true,
       closeAllRestoreSeconds: 8,
+      closeAllHoldToConfirm: false,
     });
 
     expect(set).toHaveBeenCalledWith({
@@ -154,6 +167,7 @@ describe('loadPreferences / savePreferences', () => {
         density: 'compact',
         syncEnabled: true,
         closeAllRestoreSeconds: 8,
+        closeAllHoldToConfirm: false,
       },
     });
   });

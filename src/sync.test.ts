@@ -357,6 +357,7 @@ describe('mergeSyncedPreferences', () => {
       density: 'compact',
       syncEnabled: true,
       closeAllRestoreSeconds: 8,
+      closeAllHoldToConfirm: false,
     };
     const payload = projectSyncable(baseState(), {
       ...DEFAULT_PREFERENCES,
@@ -372,6 +373,7 @@ describe('mergeSyncedPreferences', () => {
       density: 'comfortable',
       syncEnabled: true,
       closeAllRestoreSeconds: 8,
+      closeAllHoldToConfirm: false,
     });
   });
 });

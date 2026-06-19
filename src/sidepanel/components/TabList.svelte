@@ -44,6 +44,7 @@
     closeAllPending: boolean;
     closeAllPendingCount: number;
     closeAllRestoreMs?: number;
+    closeAllHoldToConfirm: boolean;
     onCloseAll: () => void;
     onRestoreClosed: () => void;
   }
@@ -76,6 +77,7 @@
     closeAllPending,
     closeAllPendingCount,
     closeAllRestoreMs,
+    closeAllHoldToConfirm,
     onCloseAll,
     onRestoreClosed,
   }: Props = $props();
@@ -215,6 +217,7 @@
       pending={closeAllPending}
       pendingCount={closeAllPendingCount}
       restoreMs={closeAllRestoreMs}
+      holdToConfirm={closeAllHoldToConfirm}
       onConfirm={onCloseAll}
       onRestore={onRestoreClosed}
     />

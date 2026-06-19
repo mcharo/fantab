@@ -36,9 +36,15 @@ export interface Preferences {
    * actually closed. Machine-local (not synced).
    */
   closeAllRestoreSeconds: number;
+  /**
+   * Require a hold-to-confirm gesture on the "Close all" button. When false, a
+   * single click triggers the close. Machine-local (not synced).
+   */
+  closeAllHoldToConfirm: boolean;
 }
 
 export const DEFAULT_SYNC_ENABLED = false;
+export const DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM = true;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   tabTitleFontSize: DEFAULT_TAB_TITLE_FONT_SIZE,
@@ -46,6 +52,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   density: DEFAULT_DENSITY,
   syncEnabled: DEFAULT_SYNC_ENABLED,
   closeAllRestoreSeconds: DEFAULT_CLOSE_ALL_RESTORE_SECONDS,
+  closeAllHoldToConfirm: DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -97,6 +104,10 @@ export function normalizePreferences(value: unknown): Preferences {
     closeAllRestoreSeconds: clampCloseAllRestoreSeconds(
       candidate.closeAllRestoreSeconds,
     ),
+    closeAllHoldToConfirm:
+      typeof candidate.closeAllHoldToConfirm === 'boolean'
+        ? candidate.closeAllHoldToConfirm
+        : DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
   };
 }
 
