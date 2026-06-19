@@ -24,6 +24,11 @@ export interface CloseTabMessage {
   payload: { tabId: number } & WindowScopedPayload;
 }
 
+export interface CloseTabsMessage {
+  action: 'CLOSE_TABS';
+  payload: { tabIds: number[] } & WindowScopedPayload;
+}
+
 export interface MoveTabMessage {
   action: 'MOVE_TAB';
   payload: { tabId: number; index: number } & WindowScopedPayload;
@@ -39,9 +44,19 @@ export interface CreateHomePinMessage {
   payload: { tabId: number } & WindowScopedPayload;
 }
 
+export interface CreateHomePinsMessage {
+  action: 'CREATE_HOME_PINS';
+  payload: { tabIds: number[] } & WindowScopedPayload;
+}
+
 export interface RemoveHomePinMessage {
   action: 'REMOVE_HOME_PIN';
   payload: { homePinId: string } & WindowScopedPayload;
+}
+
+export interface RemoveHomePinsMessage {
+  action: 'REMOVE_HOME_PINS';
+  payload: { homePinIds: string[] } & WindowScopedPayload;
 }
 
 export interface EditHomePinUrlMessage {
@@ -209,10 +224,13 @@ export type RequestMessage =
   | CreateTabMessage
   | ActivateTabMessage
   | CloseTabMessage
+  | CloseTabsMessage
   | MoveTabMessage
   | SetTabMutedMessage
   | CreateHomePinMessage
+  | CreateHomePinsMessage
   | RemoveHomePinMessage
+  | RemoveHomePinsMessage
   | EditHomePinUrlMessage
   | RenameTabAliasMessage
   | GoHomeMessage

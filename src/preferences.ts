@@ -20,12 +20,22 @@ export interface Preferences {
   theme: ThemePreference;
   /** Vertical spacing of tab rows in the list. */
   density: DensityPreference;
+  /**
+   * Whether to mirror spaces, home pins, and appearance settings to
+   * {@link chrome.storage.sync} so they follow the user across machines. This
+   * flag is intentionally machine-local — it is never itself synced, so each
+   * device opts in independently.
+   */
+  syncEnabled: boolean;
 }
+
+export const DEFAULT_SYNC_ENABLED = false;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   tabTitleFontSize: DEFAULT_TAB_TITLE_FONT_SIZE,
   theme: DEFAULT_THEME,
   density: DEFAULT_DENSITY,
+  syncEnabled: DEFAULT_SYNC_ENABLED,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -58,6 +68,10 @@ export function normalizePreferences(value: unknown): Preferences {
     tabTitleFontSize: clampTabTitleFontSize(candidate.tabTitleFontSize),
     theme: normalizeTheme(candidate.theme),
     density: normalizeDensity(candidate.density),
+    syncEnabled:
+      typeof candidate.syncEnabled === 'boolean'
+        ? candidate.syncEnabled
+        : DEFAULT_SYNC_ENABLED,
   };
 }
 

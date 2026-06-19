@@ -19,6 +19,7 @@
     selected: boolean;
     copied?: boolean;
     onActivate: (tab: PanelTab) => void;
+    onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
@@ -39,6 +40,7 @@
     selected,
     copied = false,
     onActivate,
+    onSelect,
     onClose,
     onToggleMute,
     onRename,
@@ -165,6 +167,14 @@
     if (target?.closest('.tools')) return;
     if (event.altKey) {
       openContextMenu(event);
+      return;
+    }
+    if (event.metaKey || event.ctrlKey || event.shiftKey) {
+      event.preventDefault();
+      onSelect(tab, {
+        toggle: event.metaKey || event.ctrlKey,
+        range: event.shiftKey,
+      });
       return;
     }
     onActivate(tab);

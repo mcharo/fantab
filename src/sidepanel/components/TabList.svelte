@@ -19,9 +19,10 @@
     spaceName: string;
     spaceIcon: SpaceIcon;
     topInset?: boolean;
-    selectedKey: string | null;
+    selectedKeys: Set<string>;
     copiedKey: string | null;
     onActivate: (tab: PanelTab) => void;
+    onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
@@ -47,9 +48,10 @@
     spaceName,
     spaceIcon,
     topInset = false,
-    selectedKey,
+    selectedKeys,
     copiedKey,
     onActivate,
+    onSelect,
     onClose,
     onToggleMute,
     onRename,
@@ -140,9 +142,10 @@
         {#each homePins as tab (tab.key)}
           <TabRow
             {tab}
-            selected={selectedKey === tab.key}
+            selected={selectedKeys.has(tab.key)}
             copied={copiedKey === tab.key}
             {onActivate}
+            {onSelect}
             {onClose}
             {onToggleMute}
             {onRename}
@@ -170,9 +173,10 @@
         {#each group.tabs as tab (tab.key)}
           <TabRow
             {tab}
-            selected={selectedKey === tab.key}
+            selected={selectedKeys.has(tab.key)}
             copied={copiedKey === tab.key}
             {onActivate}
+            {onSelect}
             {onClose}
             {onToggleMute}
             {onRename}
@@ -197,9 +201,10 @@
       {#each ungroupedTabs as tab (tab.key)}
         <TabRow
           {tab}
-          selected={selectedKey === tab.key}
+          selected={selectedKeys.has(tab.key)}
           copied={copiedKey === tab.key}
           {onActivate}
+          {onSelect}
           {onClose}
           {onRename}
           {onCreateHomePin}

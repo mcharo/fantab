@@ -39,6 +39,7 @@ import {
   loadState,
   moveHomePin,
   moveHomePinToSpace,
+  reattachHomePinsToRestoredTabs,
   reconcileStateForTabs,
   rememberActiveTabForSpace,
   removeHomePin,
@@ -47,10 +48,31 @@ import {
   renameTabAlias,
   saveState,
   statesEqual,
+  STORAGE_KEY,
   switchSpace,
   updateHomePin,
   updateSpaceDetails,
 } from './storage';
+import {
+  loadPreferences,
+  PREFERENCES_KEY,
+  savePreferences,
+  type Preferences,
+} from './preferences';
+import {
+  getSyncState,
+  hashPayload,
+  isSyncStorageKey,
+  mergeSyncedPreferences,
+  mergeSyncIntoState,
+  projectSyncable,
+  readSync,
+  saveSyncState,
+  writeSync,
+  type SyncMeta,
+  type SyncPayload,
+  type SyncState,
+} from './sync';
 
 const DEFAULT_GROUP_TITLE = 'New Group';
 const DEFAULT_GROUP_COLOR = 'blue';
@@ -63,10 +85,13 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'CREATE_TAB',
   'ACTIVATE_TAB',
   'CLOSE_TAB',
+  'CLOSE_TABS',
   'MOVE_TAB',
   'SET_TAB_MUTED',
   'CREATE_HOME_PIN',
+  'CREATE_HOME_PINS',
   'REMOVE_HOME_PIN',
+  'REMOVE_HOME_PINS',
   'EDIT_HOME_PIN_URL',
   'RENAME_TAB_ALIAS',
   'GO_HOME',
@@ -613,6 +638,55 @@ async function handleCreateHomePin(
   return saveAndBroadcast(state, windowId);
 }
 
+async function handleCreateHomePins(
+  tabIds: number[],
+  windowId?: number | null,
+): Promise<PanelState> {
+  let state = await loadState();
+  const activeSpace = getActiveSpace(state, windowId);
+  let nextOrder = activeSpace.homePins.reduce(
+    (max, pin) => Math.max(max, pin.order),
+    -1,
+  ) + 1;
+
+  for (const tabId of tabIds) {
+    if (findHomePinByTabId(state, tabId, activeSpace.id)) continue;
+
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      continue; // Tab closed between selection and action.
+    }
+
+    state = withTabSpaceAssignment(
+      removeTabAlias(
+        addHomePin(state, createHomePinFromTab(tab, nextOrder), activeSpace.id),
+        tabId,
+      ),
+      tabId,
+      activeSpace.id,
+    );
+    nextOrder += 1;
+  }
+
+  return saveAndBroadcast(state, windowId);
+}
+
+async function handleRemoveHomePins(
+  homePinIds: string[],
+  windowId?: number | null,
+): Promise<PanelState> {
+  let state = await loadState();
+  const activeSpaceId = getActiveSpace(state, windowId).id;
+
+  for (const homePinId of homePinIds) {
+    state = removeHomePin(state, homePinId, activeSpaceId);
+  }
+
+  return saveAndBroadcast(state, windowId);
+}
+
 async function handleEditHomePinUrl(
   payload: Extract<RequestMessage, { action: 'EDIT_HOME_PIN_URL' }>['payload'],
 ): Promise<PanelState> {
@@ -850,6 +924,18 @@ async function handleCloseTab(
   const resolvedWindowId = await resolveWindowId(windowId);
   await preserveSpaceFocusBeforeClosing(new Set([tabId]), resolvedWindowId);
   await chrome.tabs.remove(tabId);
+  return getPanelState(windowId);
+}
+
+async function handleCloseTabs(
+  tabIds: number[],
+  windowId?: number | null,
+): Promise<PanelState> {
+  if (tabIds.length === 0) return getPanelState(windowId);
+
+  const resolvedWindowId = await resolveWindowId(windowId);
+  await preserveSpaceFocusBeforeClosing(new Set(tabIds), resolvedWindowId);
+  await chrome.tabs.remove(tabIds);
   return getPanelState(windowId);
 }
 
@@ -1123,6 +1209,8 @@ async function handleMessage(
       return getPanelState(message.payload.windowId);
     case 'CLOSE_TAB':
       return handleCloseTab(message.payload.tabId, message.payload.windowId);
+    case 'CLOSE_TABS':
+      return handleCloseTabs(message.payload.tabIds, message.payload.windowId);
     case 'SET_TAB_MUTED':
       await chrome.tabs.update(message.payload.tabId, {
         muted: message.payload.muted,
@@ -1138,6 +1226,11 @@ async function handleMessage(
         message.payload.tabId,
         message.payload.windowId,
       );
+    case 'CREATE_HOME_PINS':
+      return handleCreateHomePins(
+        message.payload.tabIds,
+        message.payload.windowId,
+      );
     case 'REMOVE_HOME_PIN':
       {
         const state = await loadState();
@@ -1148,6 +1241,11 @@ async function handleMessage(
           message.payload.windowId,
         );
       }
+    case 'REMOVE_HOME_PINS':
+      return handleRemoveHomePins(
+        message.payload.homePinIds,
+        message.payload.windowId,
+      );
     case 'EDIT_HOME_PIN_URL':
       return handleEditHomePinUrl(message.payload);
     case 'RENAME_TAB_ALIAS':
@@ -1269,6 +1367,206 @@ const broadcastSoon = () => {
   void broadcastPanelState();
 };
 
+// --- Cross-device sync (chrome.storage.sync) ---------------------------------
+//
+// The background service worker is the single sync writer. A single
+// storage.onChanged listener mirrors logical changes (spaces, home pins,
+// appearance prefs) up to chrome.storage.sync and pulls remote changes back
+// down — last-write-wins. The ~12 saveState call sites are left untouched.
+
+// Best-effort fast path to skip self-triggered work while applying a remote
+// pull; the persisted lastSyncedHash is the durable loop guard.
+let applyingRemoteSync = false;
+
+async function pushLogicalState(
+  record: SyncState,
+  payload: SyncPayload,
+  hash: string,
+  updatedAt: number,
+): Promise<void> {
+  const result = await writeSync(payload, {
+    deviceId: record.deviceId,
+    updatedAt,
+    hash,
+  });
+
+  await saveSyncState({
+    ...record,
+    logicalHash: hash,
+    logicalUpdatedAt: updatedAt,
+    lastSyncedHash: result.ok ? hash : record.lastSyncedHash,
+  });
+}
+
+async function applyRemoteSync(
+  remote: { payload: SyncPayload; meta: SyncMeta },
+  prefs: Preferences,
+  record: SyncState,
+): Promise<void> {
+  applyingRemoteSync = true;
+  try {
+    const localState = await loadState();
+    const merged = mergeSyncIntoState(localState, remote.payload);
+    const tabs = await chrome.tabs.query({});
+    const reconciled = reconcileStateForTabs(merged, tabs);
+    const mergedPrefs = mergeSyncedPreferences(prefs, remote.payload);
+
+    // Persist the bookkeeping BEFORE writing local state so any onChanged the
+    // local writes trigger sees the updated lastSyncedHash and won't echo.
+    const appliedHash = hashPayload(projectSyncable(reconciled, mergedPrefs));
+    await saveSyncState({
+      ...record,
+      logicalHash: appliedHash,
+      lastSyncedHash: appliedHash,
+      logicalUpdatedAt: remote.meta.updatedAt,
+    });
+
+    await saveState(reconciled);
+    await savePreferences(mergedPrefs);
+
+    await broadcastPanelState();
+    void broadcastLinkRoutingPolicies(reconciled);
+  } finally {
+    applyingRemoteSync = false;
+  }
+}
+
+// Startup / opt-in reconcile: establish a baseline and converge local <-> sync.
+async function reconcileSync(): Promise<void> {
+  const prefs = await loadPreferences();
+  const record = await getSyncState();
+  const state = await loadState();
+  const payload = projectSyncable(state, prefs);
+  const localHash = hashPayload(payload);
+
+  const baseline: SyncState = {
+    ...record,
+    logicalHash: record.logicalHash ?? localHash,
+  };
+
+  if (!prefs.syncEnabled) {
+    if (baseline.logicalHash !== record.logicalHash) {
+      await saveSyncState(baseline);
+    }
+    return;
+  }
+
+  const remote = await readSync();
+
+  if (!remote) {
+    await pushLogicalState(baseline, payload, localHash, Date.now());
+    return;
+  }
+
+  if (remote.meta.hash === localHash) {
+    await saveSyncState({ ...baseline, lastSyncedHash: localHash });
+    return;
+  }
+
+  if (remote.meta.deviceId === baseline.deviceId) {
+    // Our own earlier write, but local has changed since — republish.
+    await pushLogicalState(
+      baseline,
+      payload,
+      localHash,
+      Math.max(Date.now(), baseline.logicalUpdatedAt),
+    );
+    return;
+  }
+
+  if (remote.meta.updatedAt >= baseline.logicalUpdatedAt) {
+    await applyRemoteSync(remote, prefs, baseline);
+  } else {
+    await pushLogicalState(
+      baseline,
+      payload,
+      localHash,
+      baseline.logicalUpdatedAt || Date.now(),
+    );
+  }
+}
+
+// Fired when local state/preferences change: push the logical projection up if
+// it actually changed and sync is on.
+async function handleLocalLogicalChange(): Promise<void> {
+  if (applyingRemoteSync) return;
+
+  const prefs = await loadPreferences();
+  const record = await getSyncState();
+  const state = await loadState();
+  const payload = projectSyncable(state, prefs);
+  const hash = hashPayload(payload);
+
+  if (record.logicalHash === null) {
+    // First observation — set the baseline without treating it as an edit.
+    await saveSyncState({ ...record, logicalHash: hash });
+    return;
+  }
+
+  if (record.logicalHash === hash) return; // tab churn / non-logical change
+
+  const updatedAt = Date.now();
+  const next: SyncState = {
+    ...record,
+    logicalHash: hash,
+    logicalUpdatedAt: updatedAt,
+  };
+
+  if (prefs.syncEnabled && hash !== record.lastSyncedHash) {
+    const result = await writeSync(payload, {
+      deviceId: record.deviceId,
+      updatedAt,
+      hash,
+    });
+    if (result.ok) next.lastSyncedHash = hash;
+  }
+
+  await saveSyncState(next);
+}
+
+// Fired when another machine writes to chrome.storage.sync.
+async function handleRemoteSyncChange(): Promise<void> {
+  if (applyingRemoteSync) return;
+
+  const prefs = await loadPreferences();
+  if (!prefs.syncEnabled) return;
+
+  const remote = await readSync();
+  if (!remote) return;
+
+  const record = await getSyncState();
+  if (remote.meta.deviceId === record.deviceId) return; // our own write
+  if (remote.meta.hash === record.lastSyncedHash) return; // already applied
+
+  if (remote.meta.updatedAt < record.logicalUpdatedAt) {
+    // Local is newer — republish so the other device converges.
+    const state = await loadState();
+    const payload = projectSyncable(state, prefs);
+    await pushLogicalState(
+      record,
+      payload,
+      hashPayload(payload),
+      record.logicalUpdatedAt,
+    );
+    return;
+  }
+
+  await applyRemoteSync(remote, prefs, record);
+}
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName === 'local') {
+    if (STORAGE_KEY in changes || PREFERENCES_KEY in changes) {
+      void handleLocalLogicalChange();
+    }
+    return;
+  }
+
+  if (areaName === 'sync' && Object.keys(changes).some(isSyncStorageKey)) {
+    void handleRemoteSyncChange();
+  }
+});
+
 // Track each window's active tab in session storage (survives service-worker
 // restarts) so a native close can tell whether the closed tab was the active
 // one — the case where Chrome auto-jumps to another space.
@@ -1288,6 +1586,78 @@ async function recordInitialActiveTabs(): Promise<void> {
 
   if (Object.keys(entries).length > 0) {
     await chrome.storage.session.set(entries);
+  }
+}
+
+// --- Post-restart home-pin re-binding -------------------------------------
+//
+// A browser restart restores tabs with new ids, breaking home-pin bindings
+// (which are keyed by tab id). For a short window after launch we re-bind pins
+// to restored tabs by URL. This runs ONLY during that window so a tab the user
+// deliberately opens later (e.g. cmd+t -> a pinned site's URL) is never claimed.
+const REATTACH_WINDOW_MS = 15000;
+const REATTACH_UNTIL_KEY = 'reattachUntil';
+
+// Cached in memory and mirrored to session storage so a service-worker respawn
+// mid-restore still honors the window (session storage clears on the next
+// browser restart, when onStartup reopens it).
+let reattachDeadline: number | null = null;
+let reattachDeadlineLoaded = false;
+
+async function openReattachWindow(): Promise<void> {
+  reattachDeadline = Date.now() + REATTACH_WINDOW_MS;
+  reattachDeadlineLoaded = true;
+  await chrome.storage.session.set({ [REATTACH_UNTIL_KEY]: reattachDeadline });
+}
+
+async function closeReattachWindow(): Promise<void> {
+  reattachDeadline = null;
+  reattachDeadlineLoaded = true;
+  await chrome.storage.session.remove(REATTACH_UNTIL_KEY);
+}
+
+async function getReattachDeadline(): Promise<number | null> {
+  if (reattachDeadlineLoaded) return reattachDeadline;
+
+  const stored = await chrome.storage.session.get(REATTACH_UNTIL_KEY);
+  const value = stored[REATTACH_UNTIL_KEY];
+  reattachDeadline = typeof value === 'number' ? value : null;
+  reattachDeadlineLoaded = true;
+  return reattachDeadline;
+}
+
+function hasLostHomePins(
+  state: StoredStateV6,
+  liveTabIds: Set<number>,
+): boolean {
+  return state.spaces.some((space) =>
+    space.homePins.some(
+      (pin) => typeof pin.tabId !== 'number' || !liveTabIds.has(pin.tabId),
+    ),
+  );
+}
+
+async function runStartupReattach(): Promise<void> {
+  const deadline = await getReattachDeadline();
+  if (deadline === null || Date.now() > deadline) return;
+
+  const liveTabs = await chrome.tabs.query({});
+  const state = await loadState();
+  const reattached = reattachHomePinsToRestoredTabs(state, liveTabs);
+
+  if (!statesEqual(state, reattached)) {
+    await saveAndBroadcast(reattached);
+  }
+
+  // Close early once every pin is bound again, so the grab-window is near-zero
+  // when the session restored cleanly.
+  const liveTabIds = new Set(
+    liveTabs
+      .map((tab) => tab.id)
+      .filter((tabId): tabId is number => typeof tabId === 'number'),
+  );
+  if (!hasLostHomePins(reattached, liveTabIds)) {
+    await closeReattachWindow();
   }
 }
 
@@ -1340,14 +1710,20 @@ chrome.tabs.onActivated.addListener((activeInfo) => {
   void broadcastPanelState();
 });
 chrome.tabs.onAttached.addListener(broadcastSoon);
-chrome.tabs.onCreated.addListener(broadcastSoon);
+chrome.tabs.onCreated.addListener(() => {
+  broadcastSoon();
+  void runStartupReattach();
+});
 chrome.tabs.onDetached.addListener(broadcastSoon);
 chrome.tabs.onMoved.addListener(broadcastSoon);
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   if (removeInfo.isWindowClosing) return;
   void handleTabRemoved(tabId, removeInfo.windowId);
 });
-chrome.tabs.onUpdated.addListener(broadcastSoon);
+chrome.tabs.onUpdated.addListener(() => {
+  broadcastSoon();
+  void runStartupReattach();
+});
 
 chrome.tabGroups.onCreated.addListener(broadcastSoon);
 chrome.tabGroups.onMoved.addListener(broadcastSoon);
@@ -1372,11 +1748,21 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void recordInitialActiveTabs();
+  void reconcileSync();
+  void (async () => {
+    await openReattachWindow();
+    await runStartupReattach();
+  })();
   broadcastSoon();
 });
 chrome.runtime.onInstalled.addListener(() => {
   void recordInitialActiveTabs();
+  void reconcileSync();
   broadcastSoon();
 });
+
+// Reconcile once whenever the service worker wakes (idempotent + diff-guarded),
+// since onStartup only fires on browser launch.
+void reconcileSync();
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });

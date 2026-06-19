@@ -48,7 +48,11 @@
   let panelWindowResolved = false;
   let searchQuery = $state('');
   let searchOpen = $state(false);
-  let selectedKey = $state<string | null>(null);
+  // Multi-selection: `selectedKeys` are all highlighted rows; `selectionAnchor`
+  // is the keyboard cursor and the anchor for shift-range selection. The set is
+  // always reassigned (never mutated in place) so Svelte tracks the change.
+  let selectedKeys = $state<Set<string>>(new Set());
+  let selectionAnchor = $state<string | null>(null);
   // Tracks the last active tab so the selection can follow it when it changes
   // (e.g. a new tab opened via Cmd+T) without resetting arrow-key navigation.
   let lastActiveTabId: number | null = null;
@@ -63,6 +67,7 @@
   let tabTitleFontSize = $state(DEFAULT_TAB_TITLE_FONT_SIZE);
   let theme = $state<ThemePreference>(DEFAULT_THEME);
   let density = $state<DensityPreference>(DEFAULT_DENSITY);
+  let syncEnabled = $state(DEFAULT_PREFERENCES.syncEnabled);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -110,9 +115,20 @@
       panelState.spaces[0],
   );
 
+  function selectSingle(key: string) {
+    selectedKeys = new Set([key]);
+    selectionAnchor = key;
+  }
+
+  function clearSelection() {
+    selectedKeys = new Set();
+    selectionAnchor = null;
+  }
+
   $effect(() => {
     if (visibleTabs.length === 0) {
-      selectedKey = null;
+      if (selectedKeys.size > 0) selectedKeys = new Set();
+      if (selectionAnchor !== null) selectionAnchor = null;
       lastActiveTabId = panelState.activeTabId;
       return;
     }
@@ -124,13 +140,25 @@
     if (panelState.activeTabId !== lastActiveTabId) {
       lastActiveTabId = panelState.activeTabId;
       if (activeTab) {
-        selectedKey = activeTab.key;
+        selectSingle(activeTab.key);
         return;
       }
     }
 
-    if (!selectedKey || !visibleTabs.some((tab) => tab.key === selectedKey)) {
-      selectedKey = activeTab?.key ?? visibleTabs[0].key;
+    // Drop any selected keys whose tabs are no longer visible.
+    const visibleKeys = new Set(visibleTabs.map((tab) => tab.key));
+    const pruned = [...selectedKeys].filter((key) => visibleKeys.has(key));
+    if (pruned.length !== selectedKeys.size) {
+      selectedKeys = new Set(pruned);
+    }
+
+    if (selectedKeys.size === 0) {
+      selectSingle(activeTab?.key ?? visibleTabs[0].key);
+    } else if (selectionAnchor === null || !visibleKeys.has(selectionAnchor)) {
+      selectionAnchor =
+        activeTab && selectedKeys.has(activeTab.key)
+          ? activeTab.key
+          : [...selectedKeys][0];
     }
   });
 
@@ -192,7 +220,7 @@
   }
 
   async function activateTab(tab: PanelTab) {
-    selectedKey = tab.key;
+    selectSingle(tab.key);
 
     if (tab.isOpen && tab.tabId !== null) {
       await sendMessage({
@@ -285,7 +313,44 @@
     void renameTab(tab, next);
   }
 
+  function selectRow(tab: PanelTab, mods: { toggle: boolean; range: boolean }) {
+    if (mods.range && selectionAnchor) {
+      selectRange(selectionAnchor, tab.key);
+      return;
+    }
+
+    if (mods.toggle) {
+      const next = new Set(selectedKeys);
+      if (next.has(tab.key)) next.delete(tab.key);
+      else next.add(tab.key);
+      selectedKeys = next;
+      selectionAnchor = tab.key;
+      return;
+    }
+
+    selectSingle(tab.key);
+  }
+
+  function selectRange(fromKey: string, toKey: string) {
+    const keys = visibleTabs.map((tab) => tab.key);
+    const from = keys.indexOf(fromKey);
+    const to = keys.indexOf(toKey);
+    if (from === -1 || to === -1) {
+      selectSingle(toKey);
+      return;
+    }
+
+    const [lo, hi] = from <= to ? [from, to] : [to, from];
+    selectedKeys = new Set(keys.slice(lo, hi + 1));
+    // Keep the anchor so further shift-clicks extend from the same origin.
+  }
+
   function openContextMenu(tab: PanelTab, x: number, y: number) {
+    // Right-clicking a row outside the current multi-selection collapses to it;
+    // right-clicking inside the selection keeps it so bulk actions apply.
+    if (!selectedKeys.has(tab.key)) {
+      selectSingle(tab.key);
+    }
     contextMenu = { tab, x, y };
   }
 
@@ -300,7 +365,7 @@
   }
 
   function persistPreferences() {
-    void savePreferences({ tabTitleFontSize, theme, density });
+    void savePreferences({ tabTitleFontSize, theme, density, syncEnabled });
   }
 
   function setTabTitleFontSize(size: number) {
@@ -315,6 +380,11 @@
 
   function setDensity(next: DensityPreference) {
     density = next;
+    persistPreferences();
+  }
+
+  function setSyncEnabled(next: boolean) {
+    syncEnabled = next;
     persistPreferences();
   }
 
@@ -409,6 +479,7 @@
       tabTitleFontSize = DEFAULT_PREFERENCES.tabTitleFontSize;
       theme = DEFAULT_PREFERENCES.theme;
       density = DEFAULT_PREFERENCES.density;
+      syncEnabled = DEFAULT_PREFERENCES.syncEnabled;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -420,7 +491,82 @@
     }
   }
 
+  function tabCount(n: number): string {
+    return `${n} ${n === 1 ? 'tab' : 'tabs'}`;
+  }
+
+  function selectedTabs(): PanelTab[] {
+    return visibleTabs.filter((tab) => selectedKeys.has(tab.key));
+  }
+
+  async function pinSelectedTabs(tabs: PanelTab[]) {
+    const tabIds = tabs
+      .filter((tab) => !tab.isHomePin && tab.tabId !== null)
+      .map((tab) => tab.tabId!);
+    if (tabIds.length === 0) return;
+    clearSelection();
+    await sendMessage({ action: 'CREATE_HOME_PINS', payload: { tabIds } });
+  }
+
+  async function unpinSelectedTabs(tabs: PanelTab[]) {
+    const homePinIds = tabs
+      .filter((tab) => tab.isHomePin && tab.homePinId)
+      .map((tab) => tab.homePinId!);
+    if (homePinIds.length === 0) return;
+    clearSelection();
+    await sendMessage({ action: 'REMOVE_HOME_PINS', payload: { homePinIds } });
+  }
+
+  async function closeSelectedTabs(tabs: PanelTab[]) {
+    const tabIds = tabs
+      .filter((tab) => tab.isOpen && tab.tabId !== null)
+      .map((tab) => tab.tabId!);
+    if (tabIds.length === 0) return;
+    clearSelection();
+    await sendMessage({ action: 'CLOSE_TABS', payload: { tabIds } });
+  }
+
+  function bulkContextMenuItems(): ContextMenuItem[] {
+    const tabs = selectedTabs();
+    const pinnable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
+    const pinned = tabs.filter((tab) => tab.isHomePin && tab.homePinId);
+    const closable = tabs.filter((tab) => tab.isOpen && tab.tabId !== null);
+    const items: ContextMenuItem[] = [];
+
+    if (pinnable.length > 0) {
+      items.push({
+        type: 'action',
+        label: `Pin ${tabCount(pinnable.length)}`,
+        onSelect: () => void pinSelectedTabs(tabs),
+      });
+    }
+
+    if (pinned.length > 0) {
+      items.push({
+        type: 'action',
+        label: `Unpin ${tabCount(pinned.length)}`,
+        onSelect: () => void unpinSelectedTabs(tabs),
+      });
+    }
+
+    if (closable.length > 0) {
+      if (items.length > 0) items.push({ type: 'separator' });
+      items.push({
+        type: 'action',
+        label: `Close ${tabCount(closable.length)}`,
+        danger: true,
+        onSelect: () => void closeSelectedTabs(tabs),
+      });
+    }
+
+    return items;
+  }
+
   function contextMenuItems(tab: PanelTab): ContextMenuItem[] {
+    if (selectedKeys.size > 1 && selectedKeys.has(tab.key)) {
+      return bulkContextMenuItems();
+    }
+
     const items: ContextMenuItem[] = [];
     const copyTarget = tab.homeUrl ?? tab.url;
     const targetSpaces = panelState.spaces.filter(
@@ -547,7 +693,7 @@
   }
 
   async function switchSpace(spaceId: string) {
-    selectedKey = null;
+    clearSelection();
     await sendMessage({
       action: 'SWITCH_SPACE',
       payload: { spaceId },
@@ -555,7 +701,7 @@
   }
 
   async function createSpace(name: string, icon: SpaceIcon) {
-    selectedKey = null;
+    clearSelection();
     await sendMessage({
       action: 'CREATE_SPACE',
       payload: { name, icon },
@@ -573,7 +719,7 @@
   }
 
   async function deleteSpace(spaceId: string) {
-    selectedKey = null;
+    clearSelection();
     await sendMessage({
       action: 'DELETE_SPACE',
       payload: { spaceId },
@@ -599,7 +745,7 @@
   }
 
   async function switchSpaceByIndex(index: number) {
-    selectedKey = null;
+    clearSelection();
     await sendMessage({
       action: 'SWITCH_SPACE_BY_INDEX',
       payload: { index },
@@ -623,7 +769,10 @@
     if (isTextInput && event.key !== 'Escape') return;
 
     if (event.key === 'Escape') {
-      if (searchQuery) {
+      if (selectedKeys.size > 1 && selectionAnchor) {
+        selectSingle(selectionAnchor);
+        event.preventDefault();
+      } else if (searchQuery) {
         searchQuery = '';
         event.preventDefault();
       }
@@ -639,20 +788,22 @@
     event.preventDefault();
     const currentIndex = Math.max(
       0,
-      visibleTabs.findIndex((tab) => tab.key === selectedKey),
+      visibleTabs.findIndex((tab) => tab.key === selectionAnchor),
     );
 
     if (event.key === 'ArrowDown') {
-      selectedKey = visibleTabs[Math.min(currentIndex + 1, visibleTabs.length - 1)].key;
+      selectSingle(
+        visibleTabs[Math.min(currentIndex + 1, visibleTabs.length - 1)].key,
+      );
       return;
     }
 
     if (event.key === 'ArrowUp') {
-      selectedKey = visibleTabs[Math.max(currentIndex - 1, 0)].key;
+      selectSingle(visibleTabs[Math.max(currentIndex - 1, 0)].key);
       return;
     }
 
-    const selectedTab = findTabByKey(selectedKey);
+    const selectedTab = findTabByKey(selectionAnchor);
     if (selectedTab) await activateTab(selectedTab);
   }
 
@@ -690,6 +841,7 @@
       tabTitleFontSize = prefs.tabTitleFontSize;
       theme = prefs.theme;
       density = prefs.density;
+      syncEnabled = prefs.syncEnabled;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -732,9 +884,10 @@
     spaceName={activeSpace?.name ?? ''}
     spaceIcon={activeSpace?.icon ?? 'circle'}
     topInset={listTopInset}
-    {selectedKey}
+    {selectedKeys}
     {copiedKey}
     onActivate={activateTab}
+    onSelect={selectRow}
     onClose={(tabId) =>
       sendMessage({ action: 'CLOSE_TAB', payload: { tabId } })}
     onToggleMute={(tabId, muted) =>
@@ -794,6 +947,7 @@
       {tabTitleFontSize}
       {theme}
       {density}
+      {syncEnabled}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -801,6 +955,7 @@
       onTabTitleFontSizeChange={setTabTitleFontSize}
       onThemeChange={setTheme}
       onDensityChange={setDensity}
+      onSyncEnabledChange={setSyncEnabled}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

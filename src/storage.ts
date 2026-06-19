@@ -6,6 +6,7 @@ import {
   type StoredStateV6,
 } from './types';
 import { iconForSpaceIndex, normalizeSpaceIcon } from './spaceIcons';
+import { isAtHome } from './lib/url';
 
 export const STORAGE_KEY = 'fantab_state';
 
@@ -764,6 +765,101 @@ export function updateHomePinsFromTabs(
   }));
 
   return changed ? { ...state, spaces } : state;
+}
+
+/**
+ * Re-bind home pins whose live tab has disappeared to a matching restored tab,
+ * matched by URL instead of the now-stale tab id. This recovers from a Chrome
+ * restart, which restores the previous session's tabs with brand-new ids.
+ *
+ * A lost pin is matched to the first unclaimed live tab whose URL equals (by
+ * origin + pathname, via {@link isAtHome}) the pin's `lastKnownUrl` and then,
+ * failing that, its `homeUrl`. `lastKnownUrl` matches are resolved across all
+ * pins first so an exact match wins over another pin's `homeUrl` match. Tabs
+ * already held by a still-live pin are never reused, and each tab binds to at
+ * most one pin. The matched tab is assigned to the pin's own space (correcting a
+ * tab a prior reconcile may have parked in the active space as a loose tab).
+ */
+export function reattachHomePinsToRestoredTabs(
+  state: StoredStateV6,
+  liveTabs: chrome.tabs.Tab[],
+): StoredStateV6 {
+  const liveTabIds = new Set(
+    liveTabs
+      .map((tab) => tab.id)
+      .filter((tabId): tabId is number => typeof tabId === 'number'),
+  );
+
+  const lostPins = state.spaces.flatMap((space) =>
+    space.homePins.filter(
+      (pin) => typeof pin.tabId !== 'number' || !liveTabIds.has(pin.tabId),
+    ),
+  );
+  if (lostPins.length === 0) return state;
+
+  // Tabs still held by a live pin binding must not be reused.
+  const claimed = new Set<number>();
+  for (const space of state.spaces) {
+    for (const pin of space.homePins) {
+      if (typeof pin.tabId === 'number' && liveTabIds.has(pin.tabId)) {
+        claimed.add(pin.tabId);
+      }
+    }
+  }
+
+  const candidates = liveTabs.filter(
+    (tab): tab is chrome.tabs.Tab & { id: number } =>
+      typeof tab.id === 'number' && !!(tab.url ?? tab.pendingUrl),
+  );
+
+  const matches = new Map<string, chrome.tabs.Tab & { id: number }>();
+  const matchPass = (ref: (pin: HomePin) => string | null) => {
+    for (const pin of lostPins) {
+      if (matches.has(pin.id)) continue;
+
+      const homeRef = ref(pin);
+      if (!homeRef) continue;
+
+      const match = candidates.find(
+        (tab) =>
+          !claimed.has(tab.id) &&
+          isAtHome(tab.url ?? tab.pendingUrl ?? null, homeRef),
+      );
+      if (match) {
+        matches.set(pin.id, match);
+        claimed.add(match.id);
+      }
+    }
+  };
+
+  matchPass((pin) => pin.lastKnownUrl);
+  matchPass((pin) => pin.homeUrl);
+
+  if (matches.size === 0) return state;
+
+  const tabSpaces = { ...state.tabSpaces };
+  const spaces = state.spaces.map((space) => {
+    let spaceChanged = false;
+    const homePins = space.homePins.map((pin) => {
+      const match = matches.get(pin.id);
+      if (!match) return pin;
+
+      tabSpaces[tabKey(match.id)] = space.id;
+      spaceChanged = true;
+
+      return {
+        ...pin,
+        tabId: match.id,
+        faviconUrl: match.favIconUrl ?? pin.faviconUrl,
+        lastKnownUrl: match.url ?? match.pendingUrl ?? pin.lastKnownUrl,
+        lastKnownTitle: match.title ?? pin.lastKnownTitle,
+      };
+    });
+
+    return spaceChanged ? { ...space, homePins } : space;
+  });
+
+  return { ...state, spaces, tabSpaces };
 }
 
 export function reconcileStateForTabs(

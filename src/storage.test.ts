@@ -10,6 +10,7 @@ import {
   moveHomePin,
   moveHomePinToSpace,
   rememberActiveTabForSpace,
+  reattachHomePinsToRestoredTabs,
   reconcileStateForTabs,
   renameSpace,
   renameTabAlias,
@@ -498,5 +499,262 @@ describe('v6 storage state', () => {
 
     const cleared = renameTabAlias(renamed, 5, ' ');
     expect(cleared.tabAliases['5']).toBeUndefined();
+  });
+});
+
+describe('reattachHomePinsToRestoredTabs', () => {
+  // A pin whose tab disappeared (e.g. after a Chrome restart), plus matching
+  // helpers, kept independent of `baseState` so tests never mutate it.
+  function lostPinState(
+    overrides: Partial<StoredStateV6['spaces'][number]['homePins'][number]> = {},
+  ): StoredStateV6 {
+    return {
+      version: 6,
+      activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
+      lastActiveTabBySpace: {},
+      tabAliases: {},
+      tabSpaces: {},
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [
+            {
+              id: 'pin-1',
+              homeUrl: 'https://mail.example.com/',
+              alias: 'Mail',
+              faviconUrl: '',
+              tabId: 1, // stale id from the previous session
+              lastKnownUrl: 'https://mail.example.com/inbox',
+              lastKnownTitle: 'Inbox',
+              createdAt: 1,
+              order: 0,
+              ...overrides,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('rebinds a lost pin to a restored tab matching lastKnownUrl', () => {
+    const result = reattachHomePinsToRestoredTabs(lostPinState(), [
+      tab({
+        id: 1000,
+        url: 'https://mail.example.com/inbox',
+        title: 'Inbox updated',
+        favIconUrl: 'mail.ico',
+        windowId: 1,
+      }),
+    ]);
+
+    expect(result.spaces[0].homePins[0]).toMatchObject({
+      tabId: 1000,
+      faviconUrl: 'mail.ico',
+      lastKnownUrl: 'https://mail.example.com/inbox',
+      lastKnownTitle: 'Inbox updated',
+    });
+    expect(result.tabSpaces['1000']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('reconcile alone does not rebind a closed pin to a newly opened tab', () => {
+    // Regression: normal browsing must not claim a deliberately opened tab whose
+    // URL happens to match a closed pin (e.g. cmd+t -> a pinned site's URL).
+    const state = lostPinState({ tabId: null });
+    const reconciled = reconcileStateForTabs(state, [
+      tab({ id: 1000, url: 'https://mail.example.com/inbox', windowId: 1 }),
+    ]);
+
+    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+    // The new tab is a normal tab in its window's active space, not the pin.
+    expect(reconciled.tabSpaces['1000']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('matches restored tabs that report only pendingUrl while unloaded', () => {
+    const result = reattachHomePinsToRestoredTabs(lostPinState(), [
+      tab({ id: 1000, pendingUrl: 'https://mail.example.com/inbox' }),
+    ]);
+
+    expect(result.spaces[0].homePins[0].tabId).toBe(1000);
+  });
+
+  it('falls back to homeUrl when lastKnownUrl does not match', () => {
+    const result = reattachHomePinsToRestoredTabs(
+      lostPinState({ lastKnownUrl: 'https://mail.example.com/sent' }),
+      [tab({ id: 1000, url: 'https://mail.example.com/' })],
+    );
+
+    expect(result.spaces[0].homePins[0].tabId).toBe(1000);
+  });
+
+  it('does not rebind on a same-domain tab with a different path (exact only)', () => {
+    const state = lostPinState({ lastKnownUrl: null });
+    const result = reattachHomePinsToRestoredTabs(state, [
+      tab({ id: 1000, url: 'https://mail.example.com/some/other/path' }),
+    ]);
+
+    expect(result).toBe(state); // unchanged
+    // And through the full pipeline the stale binding is cleared, not rebound.
+    const reconciled = reconcileStateForTabs(state, [
+      tab({ id: 1000, url: 'https://mail.example.com/some/other/path' }),
+    ]);
+    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+  });
+
+  it('leaves a pin closed when no live tab matches', () => {
+    const reconciled = reconcileStateForTabs(lostPinState(), [
+      tab({ id: 1000, url: 'https://unrelated.example.org/' }),
+    ]);
+    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+  });
+
+  it('never reuses a tab already held by another live pin', () => {
+    const state: StoredStateV6 = {
+      ...lostPinState({ id: 'lost', tabId: null }),
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [
+            {
+              id: 'live',
+              homeUrl: 'https://mail.example.com/',
+              alias: 'Mail (open)',
+              faviconUrl: '',
+              tabId: 1000,
+              lastKnownUrl: 'https://mail.example.com/inbox',
+              lastKnownTitle: 'Inbox',
+              createdAt: 1,
+              order: 0,
+            },
+            {
+              id: 'lost',
+              homeUrl: 'https://mail.example.com/',
+              alias: 'Mail (lost)',
+              faviconUrl: '',
+              tabId: null,
+              lastKnownUrl: 'https://mail.example.com/inbox',
+              lastKnownTitle: 'Inbox',
+              createdAt: 2,
+              order: 1,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = reattachHomePinsToRestoredTabs(state, [
+      tab({ id: 1000, url: 'https://mail.example.com/inbox' }),
+    ]);
+
+    expect(result).toBe(state); // the only matching tab is already claimed
+  });
+
+  it('moves a rebound tab into the pin’s own space, not the active space', () => {
+    const state: StoredStateV6 = {
+      version: 6,
+      activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
+      lastActiveTabBySpace: {},
+      tabAliases: {},
+      // Simulate a prior reconcile having parked the restored tab in the active
+      // (default) space as a loose tab.
+      tabSpaces: { '1000': DEFAULT_SPACE_ID },
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [],
+        },
+        {
+          id: 'focus',
+          name: 'Focus',
+          icon: 'diamond',
+          createdAt: 2,
+          order: 1,
+          homePins: [
+            {
+              id: 'focus-pin',
+              homeUrl: 'https://notes.example.com/',
+              alias: 'Notes',
+              faviconUrl: '',
+              tabId: 7, // stale
+              lastKnownUrl: 'https://notes.example.com/today',
+              lastKnownTitle: 'Today',
+              createdAt: 2,
+              order: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = reattachHomePinsToRestoredTabs(state, [
+      tab({ id: 1000, url: 'https://notes.example.com/today' }),
+    ]);
+
+    expect(result.spaces[1].homePins[0].tabId).toBe(1000);
+    expect(result.tabSpaces['1000']).toBe('focus');
+  });
+
+  it('prefers a lastKnownUrl match over another pin’s homeUrl match', () => {
+    const state: StoredStateV6 = {
+      version: 6,
+      activeSpaceByWindowId: { default: DEFAULT_SPACE_ID },
+      lastActiveTabBySpace: {},
+      tabAliases: {},
+      tabSpaces: {},
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [
+            {
+              id: 'home-only',
+              homeUrl: 'https://site.com/page',
+              alias: 'Home only',
+              faviconUrl: '',
+              tabId: null,
+              lastKnownUrl: null,
+              lastKnownTitle: null,
+              createdAt: 1,
+              order: 0,
+            },
+            {
+              id: 'last-known',
+              homeUrl: 'https://site.com/',
+              alias: 'Last known',
+              faviconUrl: '',
+              tabId: null,
+              lastKnownUrl: 'https://site.com/page',
+              lastKnownTitle: 'Page',
+              createdAt: 2,
+              order: 1,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = reattachHomePinsToRestoredTabs(state, [
+      tab({ id: 1000, url: 'https://site.com/page' }),
+    ]);
+
+    const byId = Object.fromEntries(
+      result.spaces[0].homePins.map((pin) => [pin.id, pin.tabId]),
+    );
+    expect(byId['last-known']).toBe(1000);
+    expect(byId['home-only']).toBeNull();
   });
 });

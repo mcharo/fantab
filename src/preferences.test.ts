@@ -79,6 +79,7 @@ describe('normalizePreferences', () => {
       tabTitleFontSize: MAX_TAB_TITLE_FONT_SIZE,
       theme: 'dark',
       density: 'compact',
+      syncEnabled: false,
     });
   });
 
@@ -86,6 +87,12 @@ describe('normalizePreferences', () => {
     expect(
       normalizePreferences({ theme: 'sepia', density: 'roomy' }),
     ).toEqual(DEFAULT_PREFERENCES);
+  });
+
+  it('defaults syncEnabled to false and keeps explicit booleans', () => {
+    expect(normalizePreferences({}).syncEnabled).toBe(false);
+    expect(normalizePreferences({ syncEnabled: 'yes' }).syncEnabled).toBe(false);
+    expect(normalizePreferences({ syncEnabled: true }).syncEnabled).toBe(true);
   });
 });
 
@@ -104,6 +111,7 @@ describe('loadPreferences / savePreferences', () => {
       tabTitleFontSize: 18,
       theme: 'dark',
       density: DEFAULT_DENSITY,
+      syncEnabled: false,
     });
     expect(get).toHaveBeenCalledWith(PREFERENCES_KEY);
   });
@@ -126,6 +134,7 @@ describe('loadPreferences / savePreferences', () => {
       tabTitleFontSize: 4,
       theme: 'light',
       density: 'compact',
+      syncEnabled: true,
     });
 
     expect(set).toHaveBeenCalledWith({
@@ -133,6 +142,7 @@ describe('loadPreferences / savePreferences', () => {
         tabTitleFontSize: MIN_TAB_TITLE_FONT_SIZE,
         theme: 'light',
         density: 'compact',
+        syncEnabled: true,
       },
     });
   });

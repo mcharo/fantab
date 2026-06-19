@@ -16,6 +16,7 @@
     tabTitleFontSize: number;
     theme: ThemePreference;
     density: DensityPreference;
+    syncEnabled: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -23,6 +24,7 @@
     onTabTitleFontSizeChange: (size: number) => void;
     onThemeChange: (theme: ThemePreference) => void;
     onDensityChange: (density: DensityPreference) => void;
+    onSyncEnabledChange: (enabled: boolean) => void;
     onEditShortcuts: () => void;
   }
 
@@ -33,6 +35,7 @@
     tabTitleFontSize,
     theme,
     density,
+    syncEnabled,
     onClose,
     onExport,
     onImport,
@@ -40,6 +43,7 @@
     onTabTitleFontSizeChange,
     onThemeChange,
     onDensityChange,
+    onSyncEnabledChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -204,6 +208,33 @@
       {#if errorMessage}
         <p class="status error">{errorMessage}</p>
       {/if}
+    </section>
+
+    <section class="group">
+      <div class="group-head">
+        <h3>Sync</h3>
+        <p class="group-desc">
+          Mirror your spaces, home pins, and appearance settings across your
+          machines. Requires Chrome Sync to be enabled in your browser.
+        </p>
+      </div>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title">Sync across devices</span>
+          <span class="toggle-hint">Open tabs stay on each device.</span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={syncEnabled}
+          onchange={(event) =>
+            onSyncEnabledChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
     </section>
   </div>
 
@@ -445,5 +476,66 @@
 
   .file-input {
     display: none;
+  }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    cursor: pointer;
+  }
+
+  .toggle-text {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .toggle-title {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .toggle-hint {
+    color: var(--text-secondary);
+    font-size: 12px;
+  }
+
+  .toggle {
+    flex: 0 0 auto;
+    position: relative;
+    width: 38px;
+    height: 22px;
+    border-radius: 999px;
+    background: var(--bg-hover);
+    cursor: pointer;
+    transition: background 0.15s ease;
+    appearance: none;
+  }
+
+  .toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--bg-primary);
+    transition: transform 0.15s ease;
+  }
+
+  .toggle:checked {
+    background: var(--accent-color);
+  }
+
+  .toggle:checked::after {
+    transform: translateX(16px);
   }
 </style>
