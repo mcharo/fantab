@@ -4,6 +4,10 @@ export const MIN_TAB_TITLE_FONT_SIZE = 12;
 export const MAX_TAB_TITLE_FONT_SIZE = 20;
 export const DEFAULT_TAB_TITLE_FONT_SIZE = 15;
 
+export const MIN_CLOSE_ALL_RESTORE_SECONDS = 2;
+export const MAX_CLOSE_ALL_RESTORE_SECONDS = 20;
+export const DEFAULT_CLOSE_ALL_RESTORE_SECONDS = 5;
+
 export type ThemePreference = 'system' | 'light' | 'dark';
 export type DensityPreference = 'comfortable' | 'compact';
 
@@ -27,6 +31,11 @@ export interface Preferences {
    * device opts in independently.
    */
   syncEnabled: boolean;
+  /**
+   * Seconds the "Close all" restore window stays open before the hidden tabs are
+   * actually closed. Machine-local (not synced).
+   */
+  closeAllRestoreSeconds: number;
 }
 
 export const DEFAULT_SYNC_ENABLED = false;
@@ -36,6 +45,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   theme: DEFAULT_THEME,
   density: DEFAULT_DENSITY,
   syncEnabled: DEFAULT_SYNC_ENABLED,
+  closeAllRestoreSeconds: DEFAULT_CLOSE_ALL_RESTORE_SECONDS,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -46,6 +56,18 @@ export function clampTabTitleFontSize(value: unknown): number {
   const bounded = Math.min(
     MAX_TAB_TITLE_FONT_SIZE,
     Math.max(MIN_TAB_TITLE_FONT_SIZE, value),
+  );
+  return Math.round(bounded);
+}
+
+export function clampCloseAllRestoreSeconds(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_CLOSE_ALL_RESTORE_SECONDS;
+  }
+
+  const bounded = Math.min(
+    MAX_CLOSE_ALL_RESTORE_SECONDS,
+    Math.max(MIN_CLOSE_ALL_RESTORE_SECONDS, value),
   );
   return Math.round(bounded);
 }
@@ -72,6 +94,9 @@ export function normalizePreferences(value: unknown): Preferences {
       typeof candidate.syncEnabled === 'boolean'
         ? candidate.syncEnabled
         : DEFAULT_SYNC_ENABLED,
+    closeAllRestoreSeconds: clampCloseAllRestoreSeconds(
+      candidate.closeAllRestoreSeconds,
+    ),
   };
 }
 

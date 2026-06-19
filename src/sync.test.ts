@@ -350,12 +350,13 @@ describe('mergeSyncIntoState', () => {
 });
 
 describe('mergeSyncedPreferences', () => {
-  it('overwrites synced fields but keeps the local syncEnabled flag', () => {
+  it('overwrites synced fields but keeps local-only preferences', () => {
     const local: Preferences = {
       tabTitleFontSize: 12,
       theme: 'light',
       density: 'compact',
       syncEnabled: true,
+      closeAllRestoreSeconds: 8,
     };
     const payload = projectSyncable(baseState(), {
       ...DEFAULT_PREFERENCES,
@@ -364,11 +365,13 @@ describe('mergeSyncedPreferences', () => {
       density: 'comfortable',
     });
 
+    // syncEnabled and closeAllRestoreSeconds are machine-local and must survive.
     expect(mergeSyncedPreferences(local, payload)).toEqual({
       tabTitleFontSize: 19,
       theme: 'dark',
       density: 'comfortable',
       syncEnabled: true,
+      closeAllRestoreSeconds: 8,
     });
   });
 });

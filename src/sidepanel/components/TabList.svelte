@@ -5,6 +5,7 @@
     SpaceIcon,
     TabGroupColor,
   } from '../../types';
+  import CloseAllBar from './CloseAllBar.svelte';
   import GroupHeader from './GroupHeader.svelte';
   import Icon from './Icon.svelte';
   import SpaceGlyph from './SpaceGlyph.svelte';
@@ -39,6 +40,12 @@
     ) => void;
     onMoveTab: (tabId: number, index: number) => void;
     onMoveHomePin: (homePinId: string, index: number) => void;
+    closeAllCount: number;
+    closeAllPending: boolean;
+    closeAllPendingCount: number;
+    closeAllRestoreMs?: number;
+    onCloseAll: () => void;
+    onRestoreClosed: () => void;
   }
 
   let {
@@ -65,12 +72,22 @@
     onUpdateGroup,
     onMoveTab,
     onMoveHomePin,
+    closeAllCount,
+    closeAllPending,
+    closeAllPendingCount,
+    closeAllRestoreMs,
+    onCloseAll,
+    onRestoreClosed,
   }: Props = $props();
 
   let pinnedCollapsed = $state(false);
 
-  const showDefaultSeparator = $derived(
-    ungroupedTabs.length > 0 && (homePins.length > 0 || groups.length > 0),
+  // The "Close all" bar replaces the old loose-tab separator: shown under the
+  // same condition (loose tabs exist beneath a pinned/group section), plus while
+  // a deferred close is awaiting restore (so the Restore affordance persists).
+  const showCloseAllBar = $derived(
+    closeAllPending ||
+      (ungroupedTabs.length > 0 && (homePins.length > 0 || groups.length > 0)),
   );
 
   function homePinDropIndex(targetHomePinId: string): number {
@@ -192,11 +209,18 @@
     {/if}
   {/each}
 
-  {#if ungroupedTabs.length > 0}
-    {#if showDefaultSeparator}
-      <div class="default-separator" role="presentation"></div>
-    {/if}
+  {#if showCloseAllBar}
+    <CloseAllBar
+      count={closeAllCount}
+      pending={closeAllPending}
+      pendingCount={closeAllPendingCount}
+      restoreMs={closeAllRestoreMs}
+      onConfirm={onCloseAll}
+      onRestore={onRestoreClosed}
+    />
+  {/if}
 
+  {#if ungroupedTabs.length > 0}
     <div class="section default-section">
       {#each ungroupedTabs as tab (tab.key)}
         <TabRow
@@ -244,12 +268,6 @@
 
   .default-section {
     padding-top: 4px;
-  }
-
-  .default-separator {
-    height: 1px;
-    margin: 12px 8px 7px;
-    background: var(--border-color);
   }
 
   .section-header {

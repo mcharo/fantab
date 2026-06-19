@@ -12,6 +12,7 @@
     DEFAULT_THEME,
     type DensityPreference,
     type ThemePreference,
+    clampCloseAllRestoreSeconds,
     clampTabTitleFontSize,
     loadPreferences,
     savePreferences,
@@ -62,12 +63,21 @@
   let settingsBusy = $state(false);
   let settingsStatus = $state<string | null>(null);
   let settingsError = $state<string | null>(null);
+
+  // "Close all" defers the actual tab close: matching tabs are hidden from the
+  // panel for a grace period during which they can be restored, then closed.
+  let pendingCloseTabIds = $state<Set<number>>(new Set());
+  let pendingCloseTimer: ReturnType<typeof setTimeout> | undefined;
   let copiedKey = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let tabTitleFontSize = $state(DEFAULT_TAB_TITLE_FONT_SIZE);
   let theme = $state<ThemePreference>(DEFAULT_THEME);
   let density = $state<DensityPreference>(DEFAULT_DENSITY);
   let syncEnabled = $state(DEFAULT_PREFERENCES.syncEnabled);
+  let closeAllRestoreSeconds = $state(
+    DEFAULT_PREFERENCES.closeAllRestoreSeconds,
+  );
+  const closeAllRestoreMs = $derived(closeAllRestoreSeconds * 1000);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -91,9 +101,19 @@
   );
 
   const filteredUngroupedTabs = $derived(
-    panelState.ungroupedTabs.filter((tab) =>
-      tabMatchesQuery(tab, searchQuery),
+    panelState.ungroupedTabs.filter(
+      (tab) =>
+        tabMatchesQuery(tab, searchQuery) &&
+        !(tab.tabId !== null && pendingCloseTabIds.has(tab.tabId)),
     ),
+  );
+
+  // Open loose tabs currently shown below the separator — what "Close all" acts
+  // on (and the count it advertises).
+  const closeAllTabIds = $derived(
+    filteredUngroupedTabs
+      .map((tab) => tab.tabId)
+      .filter((tabId): tabId is number => tabId !== null),
   );
 
   const visibleTabs = $derived([
@@ -358,6 +378,39 @@
     contextMenu = null;
   }
 
+  // Deferred "Close all": hide the loose tabs now, start the restore window, and
+  // actually close them when it expires. Restoring just un-hides them.
+  function confirmCloseAll() {
+    const ids = closeAllTabIds;
+    if (ids.length === 0) return;
+
+    clearTimeout(pendingCloseTimer);
+    pendingCloseTabIds = new Set(ids);
+    pendingCloseTimer = setTimeout(() => {
+      void finalizeCloseAll();
+    }, closeAllRestoreMs);
+  }
+
+  async function finalizeCloseAll() {
+    pendingCloseTimer = undefined;
+    const ids = [...pendingCloseTabIds];
+
+    // Close first, THEN clear the hidden set. Clearing before the close lands
+    // would un-hide the tabs for the round-trip and flash them back in.
+    if (ids.length > 0) {
+      await sendMessage({ action: 'CLOSE_TABS', payload: { tabIds: ids } });
+    }
+    pendingCloseTabIds = new Set();
+  }
+
+  function restoreClosedTabs() {
+    clearTimeout(pendingCloseTimer);
+    pendingCloseTimer = undefined;
+    pendingCloseTabIds = new Set();
+  }
+
+  $effect(() => () => clearTimeout(pendingCloseTimer));
+
   function openSettings() {
     settingsOpen = true;
     settingsStatus = null;
@@ -365,7 +418,13 @@
   }
 
   function persistPreferences() {
-    void savePreferences({ tabTitleFontSize, theme, density, syncEnabled });
+    void savePreferences({
+      tabTitleFontSize,
+      theme,
+      density,
+      syncEnabled,
+      closeAllRestoreSeconds,
+    });
   }
 
   function setTabTitleFontSize(size: number) {
@@ -385,6 +444,11 @@
 
   function setSyncEnabled(next: boolean) {
     syncEnabled = next;
+    persistPreferences();
+  }
+
+  function setCloseAllRestoreSeconds(seconds: number) {
+    closeAllRestoreSeconds = clampCloseAllRestoreSeconds(seconds);
     persistPreferences();
   }
 
@@ -480,6 +544,7 @@
       theme = DEFAULT_PREFERENCES.theme;
       density = DEFAULT_PREFERENCES.density;
       syncEnabled = DEFAULT_PREFERENCES.syncEnabled;
+      closeAllRestoreSeconds = DEFAULT_PREFERENCES.closeAllRestoreSeconds;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -842,6 +907,7 @@
       theme = prefs.theme;
       density = prefs.density;
       syncEnabled = prefs.syncEnabled;
+      closeAllRestoreSeconds = prefs.closeAllRestoreSeconds;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -919,6 +985,12 @@
         action: 'MOVE_HOME_PIN',
         payload: { homePinId, index },
       })}
+    closeAllCount={closeAllTabIds.length}
+    closeAllPending={pendingCloseTabIds.size > 0}
+    closeAllPendingCount={pendingCloseTabIds.size}
+    {closeAllRestoreMs}
+    onCloseAll={confirmCloseAll}
+    onRestoreClosed={restoreClosedTabs}
   />
 
   <SpaceDock
@@ -948,6 +1020,7 @@
       {theme}
       {density}
       {syncEnabled}
+      {closeAllRestoreSeconds}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -956,6 +1029,7 @@
       onThemeChange={setTheme}
       onDensityChange={setDensity}
       onSyncEnabledChange={setSyncEnabled}
+      onCloseAllRestoreSecondsChange={setCloseAllRestoreSeconds}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

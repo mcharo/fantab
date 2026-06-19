@@ -933,9 +933,21 @@ async function handleCloseTabs(
 ): Promise<PanelState> {
   if (tabIds.length === 0) return getPanelState(windowId);
 
+  // Some ids may already be gone (e.g. a tab closed during the deferred-close
+  // window); only act on tabs that still exist so chrome.tabs.remove doesn't
+  // reject the whole batch.
+  const liveTabs = await chrome.tabs.query({});
+  const liveTabIds = new Set(
+    liveTabs
+      .map((tab) => tab.id)
+      .filter((id): id is number => typeof id === 'number'),
+  );
+  const toClose = tabIds.filter((id) => liveTabIds.has(id));
+  if (toClose.length === 0) return getPanelState(windowId);
+
   const resolvedWindowId = await resolveWindowId(windowId);
-  await preserveSpaceFocusBeforeClosing(new Set(tabIds), resolvedWindowId);
-  await chrome.tabs.remove(tabIds);
+  await preserveSpaceFocusBeforeClosing(new Set(toClose), resolvedWindowId);
+  await chrome.tabs.remove(toClose);
   return getPanelState(windowId);
 }
 

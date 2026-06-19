@@ -1,7 +1,9 @@
 <script lang="ts">
   import {
     DENSITY_OPTIONS,
+    MAX_CLOSE_ALL_RESTORE_SECONDS,
     MAX_TAB_TITLE_FONT_SIZE,
+    MIN_CLOSE_ALL_RESTORE_SECONDS,
     MIN_TAB_TITLE_FONT_SIZE,
     THEME_OPTIONS,
     type DensityPreference,
@@ -17,6 +19,7 @@
     theme: ThemePreference;
     density: DensityPreference;
     syncEnabled: boolean;
+    closeAllRestoreSeconds: number;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -25,6 +28,7 @@
     onThemeChange: (theme: ThemePreference) => void;
     onDensityChange: (density: DensityPreference) => void;
     onSyncEnabledChange: (enabled: boolean) => void;
+    onCloseAllRestoreSecondsChange: (seconds: number) => void;
     onEditShortcuts: () => void;
   }
 
@@ -36,6 +40,7 @@
     theme,
     density,
     syncEnabled,
+    closeAllRestoreSeconds,
     onClose,
     onExport,
     onImport,
@@ -44,6 +49,7 @@
     onThemeChange,
     onDensityChange,
     onSyncEnabledChange,
+    onCloseAllRestoreSecondsChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -74,6 +80,11 @@
   function handleFontSizeInput(event: Event) {
     const value = Number((event.currentTarget as HTMLInputElement).value);
     if (Number.isFinite(value)) onTabTitleFontSizeChange(value);
+  }
+
+  function handleRestoreSecondsInput(event: Event) {
+    const value = Number((event.currentTarget as HTMLInputElement).value);
+    if (Number.isFinite(value)) onCloseAllRestoreSecondsChange(value);
   }
 </script>
 
@@ -159,6 +170,34 @@
             Example tab title
           </span>
         </div>
+      </div>
+    </section>
+
+    <section class="group">
+      <div class="group-head">
+        <h3>Tabs</h3>
+        <p class="group-desc">Behavior when closing tabs.</p>
+      </div>
+
+      <div class="field">
+        <div class="field-head">
+          <label for="close-all-restore">Close all · restore window</label>
+          <span class="field-value">{closeAllRestoreSeconds}s</span>
+        </div>
+        <input
+          id="close-all-restore"
+          class="slider"
+          type="range"
+          min={MIN_CLOSE_ALL_RESTORE_SECONDS}
+          max={MAX_CLOSE_ALL_RESTORE_SECONDS}
+          step="1"
+          value={closeAllRestoreSeconds}
+          oninput={handleRestoreSecondsInput}
+        />
+        <p class="group-desc">
+          How long “Close all” waits — with an option to restore — before the
+          tabs actually close.
+        </p>
       </div>
     </section>
 

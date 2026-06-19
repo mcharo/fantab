@@ -80,7 +80,15 @@ describe('normalizePreferences', () => {
       theme: 'dark',
       density: 'compact',
       syncEnabled: false,
+      closeAllRestoreSeconds: 5,
     });
+  });
+
+  it('clamps the close-all restore window', () => {
+    expect(normalizePreferences({}).closeAllRestoreSeconds).toBe(5);
+    expect(normalizePreferences({ closeAllRestoreSeconds: 0 }).closeAllRestoreSeconds).toBe(2);
+    expect(normalizePreferences({ closeAllRestoreSeconds: 999 }).closeAllRestoreSeconds).toBe(20);
+    expect(normalizePreferences({ closeAllRestoreSeconds: 8.6 }).closeAllRestoreSeconds).toBe(9);
   });
 
   it('drops invalid theme/density values', () => {
@@ -112,6 +120,7 @@ describe('loadPreferences / savePreferences', () => {
       theme: 'dark',
       density: DEFAULT_DENSITY,
       syncEnabled: false,
+      closeAllRestoreSeconds: 5,
     });
     expect(get).toHaveBeenCalledWith(PREFERENCES_KEY);
   });
@@ -135,6 +144,7 @@ describe('loadPreferences / savePreferences', () => {
       theme: 'light',
       density: 'compact',
       syncEnabled: true,
+      closeAllRestoreSeconds: 8,
     });
 
     expect(set).toHaveBeenCalledWith({
@@ -143,6 +153,7 @@ describe('loadPreferences / savePreferences', () => {
         theme: 'light',
         density: 'compact',
         syncEnabled: true,
+        closeAllRestoreSeconds: 8,
       },
     });
   });
