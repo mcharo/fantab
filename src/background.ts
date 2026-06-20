@@ -60,8 +60,11 @@ import {
   type Preferences,
 } from './preferences';
 import {
+  decideSyncConvergence,
   getSyncState,
   hashPayload,
+  hasStoredSyncData,
+  isSeedableProjection,
   isSyncStorageKey,
   mergeSyncedPreferences,
   mergeSyncIntoState,
@@ -1451,7 +1454,10 @@ async function applyRemoteSync(
 }
 
 // Startup / opt-in reconcile: establish a baseline and converge local <-> sync.
-async function reconcileSync(): Promise<void> {
+// `optIn` is set when the user just turned sync on; it makes convergence
+// pull-biased so a freshly onboarded device adopts the cloud instead of
+// overwriting it (see decideSyncConvergence).
+async function reconcileSync({ optIn = false } = {}): Promise<void> {
   const prefs = await loadPreferences();
   const record = await getSyncState();
   const state = await loadState();
@@ -1471,37 +1477,46 @@ async function reconcileSync(): Promise<void> {
   }
 
   const remote = await readSync();
+  // Only need the (slightly costlier) "is the cloud mid-propagation?" probe when
+  // there's no readable remote — that's the sole case where we'd consider seeding.
+  const remotePending = remote ? false : await hasStoredSyncData();
 
-  if (!remote) {
-    await pushLogicalState(baseline, payload, localHash, Date.now());
-    return;
-  }
+  const decision = decideSyncConvergence({
+    optIn,
+    localHash,
+    deviceId: baseline.deviceId,
+    logicalUpdatedAt: baseline.logicalUpdatedAt,
+    remote: remote
+      ? {
+          hash: remote.meta.hash,
+          deviceId: remote.meta.deviceId,
+          updatedAt: remote.meta.updatedAt,
+        }
+      : null,
+    remotePending,
+    localSeedable: isSeedableProjection(payload),
+    now: Date.now(),
+  });
 
-  if (remote.meta.hash === localHash) {
-    await saveSyncState({ ...baseline, lastSyncedHash: localHash });
-    return;
-  }
-
-  if (remote.meta.deviceId === baseline.deviceId) {
-    // Our own earlier write, but local has changed since — republish.
-    await pushLogicalState(
-      baseline,
-      payload,
-      localHash,
-      Math.max(Date.now(), baseline.logicalUpdatedAt),
-    );
-    return;
-  }
-
-  if (remote.meta.updatedAt >= baseline.logicalUpdatedAt) {
-    await applyRemoteSync(remote, prefs, baseline);
-  } else {
-    await pushLogicalState(
-      baseline,
-      payload,
-      localHash,
-      baseline.logicalUpdatedAt || Date.now(),
-    );
+  switch (decision.kind) {
+    case 'mark-synced':
+      await saveSyncState({ ...baseline, lastSyncedHash: localHash });
+      return;
+    case 'pull':
+      // `remote` is non-null whenever the rule returns 'pull'.
+      await applyRemoteSync(remote!, prefs, baseline);
+      return;
+    case 'push':
+      await pushLogicalState(baseline, payload, localHash, decision.updatedAt);
+      return;
+    case 'wait':
+      // Cloud is mid-propagation or there's nothing to seed. Establish the local
+      // baseline hash (so the next edit is detected) but write nothing remote;
+      // the storage.onChanged listener will pull once the cloud data lands.
+      if (baseline.logicalHash !== record.logicalHash) {
+        await saveSyncState(baseline);
+      }
+      return;
   }
 }
 
@@ -1523,6 +1538,15 @@ async function handleLocalLogicalChange(): Promise<void> {
   }
 
   if (record.logicalHash === hash) return; // tab churn / non-logical change
+
+  // No cloud baseline yet: never blind-push, or this device could overwrite a
+  // remote that simply hasn't propagated down yet (the new-device data loss).
+  // Reconcile pull-first instead; it reads the cloud and decides safely. Don't
+  // bump logicalUpdatedAt, so a later last-write-wins can't favour this edit.
+  if (prefs.syncEnabled && record.lastSyncedHash === null) {
+    await reconcileSync({ optIn: true });
+    return;
+  }
 
   const updatedAt = Date.now();
   const next: SyncState = {
@@ -1557,6 +1581,14 @@ async function handleRemoteSyncChange(): Promise<void> {
   if (remote.meta.deviceId === record.deviceId) return; // our own write
   if (remote.meta.hash === record.lastSyncedHash) return; // already applied
 
+  // No cloud baseline yet — adopt the incoming data rather than republishing
+  // local over it. Guards the new-device case where local looks "newer" only
+  // because it has never reconciled with the cloud.
+  if (record.lastSyncedHash === null) {
+    await applyRemoteSync(remote, prefs, record);
+    return;
+  }
+
   if (remote.meta.updatedAt < record.logicalUpdatedAt) {
     // Local is newer — republish so the other device converges.
     const state = await loadState();
@@ -1575,6 +1607,22 @@ async function handleRemoteSyncChange(): Promise<void> {
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === 'local') {
+    const prefsChange = changes[PREFERENCES_KEY];
+    if (prefsChange) {
+      const before =
+        (prefsChange.oldValue as Partial<Preferences> | undefined)
+          ?.syncEnabled ?? false;
+      const after =
+        (prefsChange.newValue as Partial<Preferences> | undefined)
+          ?.syncEnabled ?? false;
+      if (!before && after) {
+        // Sync was just turned on: pull the cloud version before any local edit
+        // can race a blank projection up and clobber the synced set.
+        void reconcileSync({ optIn: true });
+        return;
+      }
+    }
+
     if (STORAGE_KEY in changes || PREFERENCES_KEY in changes) {
       void handleLocalLogicalChange();
     }

@@ -335,6 +335,93 @@ export function mergeSyncedPreferences(
   };
 }
 
+/** The minimal view of a remote {@link SyncMeta} the convergence rule needs. */
+export interface RemoteSyncSummary {
+  hash: string;
+  deviceId: string;
+  updatedAt: number;
+}
+
+export interface ConvergenceInputs {
+  /**
+   * True when the user has just enabled sync on this device. Opt-in is
+   * pull-biased: if any cloud data already exists it is adopted wholesale, so a
+   * freshly onboarded (blank) device can never overwrite the synced set.
+   */
+  optIn: boolean;
+  /** Hash of this device's current logical projection. */
+  localHash: string;
+  /** This device's stable sync id. */
+  deviceId: string;
+  /** When this device's logical projection last changed locally. */
+  logicalUpdatedAt: number;
+  /** Summary of the readable record in `chrome.storage.sync`, or null. */
+  remote: RemoteSyncSummary | null;
+  /**
+   * True when `chrome.storage.sync` holds fantab keys we could *not* assemble
+   * into a valid {@link SyncPayload} — i.e. a partial/in-flight write. Because
+   * `chrome.storage.sync` is eventually consistent, a device that just enabled
+   * sync often sees the cloud mid-propagation; we must not treat that as "empty"
+   * and seed over it. Only consulted when {@link remote} is null.
+   */
+  remotePending: boolean;
+  /**
+   * True when this device's projection holds something worth seeding (any home
+   * pin, or more than one space). A blank device must never seed the cloud — the
+   * core cause of new-device data loss. Only consulted when {@link remote} is
+   * null and the cloud looks genuinely empty.
+   */
+  localSeedable: boolean;
+  /** Wall clock, injected for deterministic tests. */
+  now: number;
+}
+
+export type SyncConvergence =
+  | { kind: 'mark-synced' }
+  | { kind: 'pull' }
+  | { kind: 'push'; updatedAt: number }
+  /** Do nothing now; the cloud is mid-propagation or there's nothing to seed. */
+  | { kind: 'wait' };
+
+/**
+ * Decides how a sync-enabled device should converge with the cloud. Pure so the
+ * policy can be unit-tested in isolation from the `chrome.storage` plumbing in
+ * the background worker.
+ *
+ * With a readable remote:
+ * - equals local → just record it (`mark-synced`);
+ * - opt-in → always adopt the cloud (`pull`) so a new device can't clobber it;
+ * - otherwise last-write-wins by `updatedAt`, with our own prior write treated
+ *   as a republish so a stale remote can't shadow newer local edits.
+ *
+ * With no readable remote, seeding is deliberately conservative — this is where
+ * new devices used to overwrite good cloud data before it had propagated down:
+ * - a partial/in-flight remote → `wait` (never seed over it);
+ * - a blank local projection → `wait` (nothing worth seeding);
+ * - genuinely empty cloud + real local data → `push` (this device founds the set).
+ */
+export function decideSyncConvergence(input: ConvergenceInputs): SyncConvergence {
+  if (input.remote) {
+    if (input.remote.hash === input.localHash) return { kind: 'mark-synced' };
+    if (input.optIn) return { kind: 'pull' };
+
+    if (input.remote.deviceId === input.deviceId) {
+      // Our own earlier write, but local has changed since — republish.
+      return {
+        kind: 'push',
+        updatedAt: Math.max(input.now, input.logicalUpdatedAt),
+      };
+    }
+
+    if (input.remote.updatedAt >= input.logicalUpdatedAt) return { kind: 'pull' };
+    return { kind: 'push', updatedAt: input.logicalUpdatedAt || input.now };
+  }
+
+  if (input.remotePending) return { kind: 'wait' };
+  if (!input.localSeedable) return { kind: 'wait' };
+  return { kind: 'push', updatedAt: input.now };
+}
+
 /** Loads the machine-local sync bookkeeping, creating it on first use. */
 export async function getSyncState(): Promise<SyncState> {
   const result = await chrome.storage.local.get(SYNC_STATE_KEY);
@@ -371,6 +458,26 @@ export async function saveSyncState(state: SyncState): Promise<void> {
 /** True if a changed `chrome.storage.sync` key belongs to this module. */
 export function isSyncStorageKey(key: string): boolean {
   return key === SYNC_META_KEY || key.startsWith(SYNC_CHUNK_PREFIX);
+}
+
+/**
+ * True if `chrome.storage.sync` currently holds any fantab key. Used to tell a
+ * genuinely empty cloud apart from one that is mid-propagation (keys present but
+ * not yet a readable payload), so a new device doesn't seed over pending data.
+ */
+export async function hasStoredSyncData(): Promise<boolean> {
+  const all = await chrome.storage.sync.get(null);
+  return Object.keys(all).some(isSyncStorageKey);
+}
+
+/**
+ * True if a projection holds anything worth seeding the cloud with — any home
+ * pin, or more than one space. A blank/default device returns false and is never
+ * allowed to overwrite the synced set.
+ */
+export function isSeedableProjection(payload: SyncPayload): boolean {
+  if (payload.spaces.length > 1) return true;
+  return payload.spaces.some((space) => space.homePins.length > 0);
 }
 
 function isSyncMeta(value: unknown): value is SyncMeta {

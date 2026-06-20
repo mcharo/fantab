@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_PREFERENCES, type Preferences } from './preferences';
 import {
+  decideSyncConvergence,
   getSyncState,
   hashPayload,
   mergeSyncedPreferences,
@@ -11,6 +12,7 @@ import {
   SYNC_META_KEY,
   SYNC_STATE_KEY,
   writeSync,
+  type ConvergenceInputs,
   type SyncMeta,
 } from './sync';
 import { DEFAULT_SPACE_ID, type HomePin, type StoredStateV6 } from './types';
@@ -390,5 +392,185 @@ describe('getSyncState', () => {
     // Returns the same persisted record next time.
     const again = await getSyncState();
     expect(again.deviceId).toBe(created.deviceId);
+  });
+});
+
+describe('decideSyncConvergence', () => {
+  function inputs(overrides: Partial<ConvergenceInputs> = {}): ConvergenceInputs {
+    return {
+      optIn: false,
+      localHash: 'local',
+      deviceId: 'this-device',
+      logicalUpdatedAt: 0,
+      remote: null,
+      remotePending: false,
+      localSeedable: true,
+      now: 1000,
+      ...overrides,
+    };
+  }
+
+  it('only records the hash when remote already equals local', () => {
+    expect(
+      decideSyncConvergence(
+        inputs({
+          remote: { hash: 'local', deviceId: 'other', updatedAt: 5000 },
+        }),
+      ),
+    ).toEqual({ kind: 'mark-synced' });
+  });
+
+  describe('opt-in (sync just enabled)', () => {
+    it('adopts existing cloud data instead of pushing the local projection', () => {
+      // The onboarding bug: a blank new device must not overwrite the synced set.
+      expect(
+        decideSyncConvergence(
+          inputs({
+            optIn: true,
+            localHash: 'blank',
+            remote: { hash: 'good-data', deviceId: 'other', updatedAt: 9000 },
+          }),
+        ),
+      ).toEqual({ kind: 'pull' });
+    });
+
+    it('pulls even when this device claims a newer local change', () => {
+      // Without the opt-in bias, last-write-wins here would push and clobber.
+      expect(
+        decideSyncConvergence(
+          inputs({
+            optIn: true,
+            localHash: 'blank',
+            logicalUpdatedAt: 50_000,
+            remote: { hash: 'good-data', deviceId: 'other', updatedAt: 1 },
+          }),
+        ),
+      ).toEqual({ kind: 'pull' });
+    });
+
+    it('adopts the cloud even when the remote is this device’s own prior write', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            optIn: true,
+            localHash: 'blank',
+            remote: { hash: 'good-data', deviceId: 'this-device', updatedAt: 9000 },
+          }),
+        ),
+      ).toEqual({ kind: 'pull' });
+    });
+
+    it('seeds the cloud when opting in with real local data and an empty cloud', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({ optIn: true, remote: null, localSeedable: true }),
+        ),
+      ).toEqual({ kind: 'push', updatedAt: 1000 });
+    });
+
+    it('waits instead of seeding a blank device when the cloud looks empty', () => {
+      // The real-world data loss: the new device sees the cloud mid-propagation
+      // (no readable payload yet) and must not write its blank state up.
+      expect(
+        decideSyncConvergence(
+          inputs({ optIn: true, remote: null, localSeedable: false }),
+        ),
+      ).toEqual({ kind: 'wait' });
+    });
+
+    it('waits when the cloud holds a partial / in-flight remote', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            optIn: true,
+            remote: null,
+            remotePending: true,
+            localSeedable: true,
+          }),
+        ),
+      ).toEqual({ kind: 'wait' });
+    });
+
+    it('does not redundantly pull when cloud already matches local', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            optIn: true,
+            remote: { hash: 'local', deviceId: 'other', updatedAt: 9000 },
+          }),
+        ),
+      ).toEqual({ kind: 'mark-synced' });
+    });
+  });
+
+  describe('no readable remote (seeding safety)', () => {
+    it('seeds an empty cloud from a device that has real data', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({ remote: null, remotePending: false, localSeedable: true }),
+        ),
+      ).toEqual({ kind: 'push', updatedAt: 1000 });
+    });
+
+    it('waits when sync keys are present but unreadable (mid-propagation)', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({ remote: null, remotePending: true, localSeedable: true }),
+        ),
+      ).toEqual({ kind: 'wait' });
+    });
+
+    it('waits rather than seed a blank projection over an empty-looking cloud', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({ remote: null, remotePending: false, localSeedable: false }),
+        ),
+      ).toEqual({ kind: 'wait' });
+    });
+  });
+
+  describe('steady state (last-write-wins)', () => {
+    it('pulls a fresh device with no local changes (logicalUpdatedAt 0)', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            remote: { hash: 'good-data', deviceId: 'other', updatedAt: 9000 },
+          }),
+        ),
+      ).toEqual({ kind: 'pull' });
+    });
+
+    it('republishes our own stale remote when local has moved on', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            logicalUpdatedAt: 200,
+            remote: { hash: 'older', deviceId: 'this-device', updatedAt: 100 },
+          }),
+        ),
+      ).toEqual({ kind: 'push', updatedAt: 1000 });
+    });
+
+    it('pulls when another device wrote more recently than our last change', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            logicalUpdatedAt: 100,
+            remote: { hash: 'newer', deviceId: 'other', updatedAt: 200 },
+          }),
+        ),
+      ).toEqual({ kind: 'pull' });
+    });
+
+    it('pushes when our local change is newer than another device’s remote', () => {
+      expect(
+        decideSyncConvergence(
+          inputs({
+            logicalUpdatedAt: 300,
+            remote: { hash: 'older', deviceId: 'other', updatedAt: 200 },
+          }),
+        ),
+      ).toEqual({ kind: 'push', updatedAt: 300 });
+    });
   });
 });
