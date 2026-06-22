@@ -68,6 +68,10 @@
   // panel for a grace period during which they can be restored, then closed.
   let pendingCloseTabIds = $state<Set<number>>(new Set());
   let pendingCloseTimer: ReturnType<typeof setTimeout> | undefined;
+  // When "Close all" hides the active tab, we move focus off it immediately and
+  // remember it here so an explicit Restore can re-activate it. null when the
+  // active tab wasn't among those hidden.
+  let closeAllRestoreActiveTabId: number | null = null;
   let copiedKey = $state<string | null>(null);
   let copiedTimer: ReturnType<typeof setTimeout> | undefined;
   let tabTitleFontSize = $state(DEFAULT_TAB_TITLE_FONT_SIZE);
@@ -161,7 +165,7 @@
       pendingCloseTabIds.has(activeId)
     ) {
       lastActiveTabId = activeId;
-      restoreClosedTabs();
+      restoreClosedTabs(false);
       return;
     }
 
@@ -405,6 +409,20 @@
 
     clearTimeout(pendingCloseTimer);
     pendingCloseTabIds = new Set(ids);
+
+    // If the active tab is one of the ones we're hiding, move focus off it now
+    // (to the last-used tab in the space, or the blank page) so it isn't left in
+    // front during the restore window. Remember it so Restore can re-focus it.
+    const activeId = panelState.activeTabId;
+    closeAllRestoreActiveTabId =
+      activeId !== null && pendingCloseTabIds.has(activeId) ? activeId : null;
+    if (closeAllRestoreActiveTabId !== null) {
+      void sendMessage({
+        action: 'PRESERVE_CLOSE_FOCUS',
+        payload: { tabIds: ids },
+      });
+    }
+
     pendingCloseTimer = setTimeout(() => {
       void finalizeCloseAll();
     }, closeAllRestoreMs);
@@ -412,6 +430,7 @@
 
   async function finalizeCloseAll() {
     pendingCloseTimer = undefined;
+    closeAllRestoreActiveTabId = null;
     const ids = [...pendingCloseTabIds];
 
     // Close first, THEN clear the hidden set. Clearing before the close lands
@@ -422,10 +441,22 @@
     pendingCloseTabIds = new Set();
   }
 
-  function restoreClosedTabs() {
+  // `reactivatePreviousTab` re-focuses the tab that was active when "Close all"
+  // moved focus away. We skip it when the restore was triggered by the user
+  // re-activating a hidden tab themselves (they're already where they want).
+  function restoreClosedTabs(reactivatePreviousTab = true) {
     clearTimeout(pendingCloseTimer);
     pendingCloseTimer = undefined;
     pendingCloseTabIds = new Set();
+
+    const previousActiveTabId = closeAllRestoreActiveTabId;
+    closeAllRestoreActiveTabId = null;
+    if (reactivatePreviousTab && previousActiveTabId !== null) {
+      void sendMessage({
+        action: 'ACTIVATE_TAB',
+        payload: { tabId: previousActiveTabId },
+      });
+    }
   }
 
   $effect(() => () => clearTimeout(pendingCloseTimer));
@@ -1018,7 +1049,7 @@
     {closeAllRestoreMs}
     {closeAllHoldToConfirm}
     onCloseAll={confirmCloseAll}
-    onRestoreClosed={restoreClosedTabs}
+    onRestoreClosed={() => restoreClosedTabs()}
   />
 
   <SpaceDock

@@ -89,6 +89,7 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'ACTIVATE_TAB',
   'CLOSE_TAB',
   'CLOSE_TABS',
+  'PRESERVE_CLOSE_FOCUS',
   'MOVE_TAB',
   'SET_TAB_MUTED',
   'CREATE_HOME_PIN',
@@ -961,6 +962,22 @@ async function handleCloseTabs(
   return getPanelState(windowId);
 }
 
+// "Close all" defers the actual close: it hides the tabs in the panel and
+// starts a restore window. This moves focus off those tabs immediately (to the
+// last-used tab in the space, or the blank page) without removing them, so a
+// soon-to-close active tab isn't left in front during the window.
+async function handlePreserveCloseFocus(
+  tabIds: number[],
+  windowId?: number | null,
+): Promise<PanelState> {
+  if (tabIds.length > 0) {
+    const resolvedWindowId = await resolveWindowId(windowId);
+    await preserveSpaceFocusBeforeClosing(new Set(tabIds), resolvedWindowId);
+  }
+
+  return getPanelState(windowId);
+}
+
 async function handleCreateGroupFromTab(
   tabId: number,
   title = DEFAULT_GROUP_TITLE,
@@ -1233,6 +1250,11 @@ async function handleMessage(
       return handleCloseTab(message.payload.tabId, message.payload.windowId);
     case 'CLOSE_TABS':
       return handleCloseTabs(message.payload.tabIds, message.payload.windowId);
+    case 'PRESERVE_CLOSE_FOCUS':
+      return handlePreserveCloseFocus(
+        message.payload.tabIds,
+        message.payload.windowId,
+      );
     case 'SET_TAB_MUTED':
       await chrome.tabs.update(message.payload.tabId, {
         muted: message.payload.muted,

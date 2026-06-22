@@ -29,6 +29,16 @@ export interface CloseTabsMessage {
   payload: { tabIds: number[] } & WindowScopedPayload;
 }
 
+/**
+ * Move focus off a set of tabs about to be deferred-closed, without removing
+ * them. Used by "Close all" so the soon-to-close active tab isn't left in front
+ * during the restore window.
+ */
+export interface PreserveCloseFocusMessage {
+  action: 'PRESERVE_CLOSE_FOCUS';
+  payload: { tabIds: number[] } & WindowScopedPayload;
+}
+
 export interface MoveTabMessage {
   action: 'MOVE_TAB';
   payload: { tabId: number; index: number } & WindowScopedPayload;
@@ -225,6 +235,7 @@ export type RequestMessage =
   | ActivateTabMessage
   | CloseTabMessage
   | CloseTabsMessage
+  | PreserveCloseFocusMessage
   | MoveTabMessage
   | SetTabMutedMessage
   | CreateHomePinMessage
