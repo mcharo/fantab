@@ -257,6 +257,67 @@
     await sendMessage({ action: 'GET_PANEL_STATE', payload: {} });
   }
 
+  // Injected into the target tab. Toggles native picture-in-picture for the
+  // most prominent playing video (falls back to the largest ready video).
+  // Must stay self-contained — it's serialized and run in the page.
+  function requestPictureInPictureInPage(): void {
+    try {
+      if (document.pictureInPictureElement) {
+        void document.exitPictureInPicture();
+        return;
+      }
+
+      // Rank by the on-screen rendered area, not intrinsic resolution: streaming
+      // pages (e.g. Hulu) keep small "live"/promo videos around that can be high
+      // res but render tiny, and we want the big player the user is watching.
+      const renderedArea = (video: HTMLVideoElement): number => {
+        const rect = video.getBoundingClientRect();
+        const area = rect.width * rect.height;
+        return area > 0 ? area : video.videoWidth * video.videoHeight;
+      };
+
+      const videos = Array.from(document.querySelectorAll('video'));
+      const ready = videos.filter(
+        (video) => video.readyState >= 2 && video.videoWidth > 0,
+      );
+      const playing = ready.filter((video) => !video.paused && !video.ended);
+      const target = (playing.length > 0 ? playing : ready).sort(
+        (a, b) => renderedArea(b) - renderedArea(a),
+      )[0];
+
+      if (!target || typeof target.requestPictureInPicture !== 'function') return;
+
+      // Hulu/Disney+ set disablePictureInPicture on their main player, which
+      // blocks the request (and previously made us fall back to a promo video).
+      // The property is writable, so clear it before requesting.
+      target.disablePictureInPicture = false;
+      void target.requestPictureInPicture().catch((error) => {
+        console.warn('[fantab] picture-in-picture request failed', error);
+      });
+    } catch (error) {
+      console.warn('[fantab] picture-in-picture toggle failed', error);
+    }
+  }
+
+  function togglePictureInPicture(tabId: number): void {
+    // Inject synchronously from the click so the side panel's transient user
+    // activation carries into the page; requestPictureInPicture() requires a
+    // user gesture, and routing through the async background channel drops it.
+    // Top frame only: matches where we detect video, and avoids a promo video in
+    // another frame racing for the single PiP slot.
+    chrome.scripting
+      .executeScript({
+        target: { tabId },
+        func: requestPictureInPictureInPage,
+      })
+      .catch((error: unknown) => {
+        errorMessage =
+          error instanceof Error
+            ? error.message
+            : 'Unable to open picture-in-picture';
+      });
+  }
+
   function findTabByKey(key: string | null): PanelTab | undefined {
     if (!key) return undefined;
     return visibleTabs.find((tab) => tab.key === key);
@@ -1016,6 +1077,7 @@
       sendMessage({ action: 'CLOSE_TAB', payload: { tabId } })}
     onToggleMute={(tabId, muted) =>
       sendMessage({ action: 'SET_TAB_MUTED', payload: { tabId, muted } })}
+    onTogglePiP={togglePictureInPicture}
     onRename={renameTab}
     onCreateHomePin={(tabId) =>
       sendMessage({ action: 'CREATE_HOME_PIN', payload: { tabId } })}

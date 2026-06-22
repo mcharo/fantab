@@ -88,6 +88,7 @@ export interface PanelTab {
   isActive: boolean;
   isAudible: boolean;
   isMuted: boolean;
+  isPlayingVideo: boolean;
   isNativePinned: boolean;
   isHomePin: boolean;
   isOpen: boolean;

@@ -17,7 +17,8 @@
     "favicon",
     "windows",
     "offscreen",
-    "clipboardWrite"
+    "clipboardWrite",
+    "scripting"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

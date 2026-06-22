@@ -2,6 +2,7 @@ import type {
   ContentRequestMessage,
   ExportSpaceDataResponse,
   LinkRoutingPolicy,
+  MediaStateChangedMessage,
   Message,
   OpenExternalLinkFromHomePinResponse,
   RequestMessage,
@@ -127,6 +128,12 @@ const EMPTY_LINK_ROUTING_POLICY: LinkRoutingPolicy = {
 };
 let creatingOffscreenDocument: Promise<void> | null = null;
 
+// Tab ids a content script has reported as currently playing video. Chrome's
+// tabs API exposes audio (`audible`) but nothing for video, so we track it from
+// content-script media events. In-memory only: a fresh report follows whenever
+// the service worker restarts and pages re-run their content scripts.
+const tabsWithPlayingVideo = new Set<number>();
+
 interface CopyToClipboardResponse {
   copied: boolean;
   error?: string;
@@ -201,7 +208,28 @@ async function getPanelState(
     state,
     windowId,
     blankUrl: placeholderUrl(),
+    playingVideoTabIds: tabsWithPlayingVideo,
   });
+}
+
+function isMediaStateChangedMessage(
+  message: Message,
+): message is MediaStateChangedMessage {
+  return message.action === 'MEDIA_STATE_CHANGED';
+}
+
+function handleMediaStateChanged(
+  sender: chrome.runtime.MessageSender,
+  hasPlayingVideo: boolean,
+): void {
+  const tabId = sender.tab?.id;
+  if (typeof tabId !== 'number') return;
+
+  const wasPlaying = tabsWithPlayingVideo.has(tabId);
+  if (hasPlayingVideo) tabsWithPlayingVideo.add(tabId);
+  else tabsWithPlayingVideo.delete(tabId);
+
+  if (wasPlaying !== hasPlayingVideo) void broadcastPanelState();
 }
 
 async function broadcastPanelState(): Promise<void> {
@@ -1394,6 +1422,11 @@ async function handleMessage(
 }
 
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
+  if (isMediaStateChangedMessage(message)) {
+    handleMediaStateChanged(sender, message.payload.hasPlayingVideo);
+    return false;
+  }
+
   if (isRequestMessage(message)) {
     handleMessage(message, sender).then(sendResponse);
     return true;
@@ -1822,10 +1855,14 @@ chrome.tabs.onCreated.addListener(() => {
 chrome.tabs.onDetached.addListener(broadcastSoon);
 chrome.tabs.onMoved.addListener(broadcastSoon);
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  tabsWithPlayingVideo.delete(tabId);
   if (removeInfo.isWindowClosing) return;
   void handleTabRemoved(tabId, removeInfo.windowId);
 });
-chrome.tabs.onUpdated.addListener(() => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  // A navigation invalidates the previous page's video report; the fresh page's
+  // content script re-reports once it starts playing.
+  if (changeInfo.url) tabsWithPlayingVideo.delete(tabId);
   broadcastSoon();
   void runStartupReattach();
 });
@@ -1851,9 +1888,37 @@ chrome.commands.onCommand.addListener((command, tab) => {
   }
 });
 
+// Manifest content scripts only auto-inject on navigation, so tabs open before
+// an install/update/reload keep running the old (or orphaned) script and never
+// report video. Re-inject into existing web tabs; the content script tears down
+// any prior instance of itself, so this is safe even where one already runs.
+async function injectContentScriptIntoOpenTabs(): Promise<void> {
+  let tabs: chrome.tabs.Tab[];
+  try {
+    tabs = await chrome.tabs.query({ url: ['http://*/*', 'https://*/*'] });
+  } catch {
+    return;
+  }
+
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (typeof tab.id !== 'number') return;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['contentScript.js'],
+        });
+      } catch {
+        // Restricted pages (Web Store, PDFs, discarded tabs) reject injection.
+      }
+    }),
+  );
+}
+
 chrome.runtime.onStartup.addListener(() => {
   void recordInitialActiveTabs();
   void reconcileSync();
+  void injectContentScriptIntoOpenTabs();
   void (async () => {
     await openReattachWindow();
     await runStartupReattach();
@@ -1863,6 +1928,7 @@ chrome.runtime.onStartup.addListener(() => {
 chrome.runtime.onInstalled.addListener(() => {
   void recordInitialActiveTabs();
   void reconcileSync();
+  void injectContentScriptIntoOpenTabs();
   broadcastSoon();
 });
 

@@ -219,6 +219,16 @@ export interface PanelStateUpdatedMessage {
   payload: Record<string, never>;
 }
 
+/**
+ * Fire-and-forget report from a content script telling the background whether
+ * the tab currently has a playing video, so the panel can offer picture-in-
+ * picture. Carries no response.
+ */
+export interface MediaStateChangedMessage {
+  action: 'MEDIA_STATE_CHANGED';
+  payload: { hasPlayingVideo: boolean };
+}
+
 export interface UrlCopiedMessage {
   action: 'URL_COPIED';
   payload: { tabId: number };
@@ -272,4 +282,8 @@ export type BroadcastMessage =
   | LinkRoutingPolicyUpdatedMessage
   | UrlCopiedMessage;
 
-export type Message = RequestMessage | ContentRequestMessage | BroadcastMessage;
+export type Message =
+  | RequestMessage
+  | ContentRequestMessage
+  | BroadcastMessage
+  | MediaStateChangedMessage;

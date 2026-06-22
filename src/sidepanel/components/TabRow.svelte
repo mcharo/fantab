@@ -22,6 +22,7 @@
     onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
+    onTogglePiP: (tabId: number) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
     onRemoveHomePin: (homePinId: string) => void;
@@ -43,6 +44,7 @@
     onSelect,
     onClose,
     onToggleMute,
+    onTogglePiP,
     onRename,
     onCreateHomePin,
     onRemoveHomePin,
@@ -283,6 +285,25 @@
     {/if}
   </button>
 
+  {#if tab.isAudible && tab.tabId !== null}
+    <button
+      class="audio-btn"
+      class:muted={tab.isMuted}
+      onclick={(event) => {
+        event.stopPropagation();
+        onToggleMute(tab.tabId!, !tab.isMuted);
+        (event.currentTarget as HTMLButtonElement).blur();
+      }}
+      title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
+    >
+      {#if tab.isMuted}
+        <Icon name="volume-x" size={15} />
+      {:else}
+        <span class="audio-dot"></span>
+      {/if}
+    </button>
+  {/if}
+
   <div class="main">
     <div class="title-line">
       <InlineEdit
@@ -294,6 +315,20 @@
   </div>
 
   <div class="tools">
+    {#if tab.isPlayingVideo && tab.tabId !== null}
+      <button
+        class="tool-btn"
+        onclick={(event) => {
+          event.stopPropagation();
+          onTogglePiP(tab.tabId!);
+          (event.currentTarget as HTMLButtonElement).blur();
+        }}
+        title="Picture-in-picture"
+      >
+        <Icon name="pip" size={15} />
+      </button>
+    {/if}
+
     {#if tab.isHomePin && tab.homePinId}
       <button
         class="tool-btn"
@@ -338,25 +373,6 @@
       </button>
     {/if}
   </div>
-
-  {#if tab.isAudible && tab.tabId !== null}
-    <button
-      class="audio-btn"
-      class:muted={tab.isMuted}
-      onclick={(event) => {
-        event.stopPropagation();
-        onToggleMute(tab.tabId!, !tab.isMuted);
-        (event.currentTarget as HTMLButtonElement).blur();
-      }}
-      title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
-    >
-      {#if tab.isMuted}
-        <Icon name="volume-x" size={15} />
-      {:else}
-        <span class="audio-dot"></span>
-      {/if}
-    </button>
-  {/if}
 
   {#if copied}
     <span class="copied-badge" aria-hidden="true">

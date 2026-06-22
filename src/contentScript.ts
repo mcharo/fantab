@@ -1,4 +1,18 @@
 (() => {
+  const CONTENT_SCRIPT_GLOBAL = '__fantabContentScript';
+  interface ContentScriptHandle {
+    teardown: () => void;
+  }
+  const globalScope = window as typeof window & {
+    [CONTENT_SCRIPT_GLOBAL]?: ContentScriptHandle;
+  };
+
+  // A prior instance can still be live on this page: orphaned after an
+  // extension reload, or a duplicate programmatic injection on top of the
+  // manifest-injected one. Tear it down so only this fresh instance handles
+  // events (otherwise listeners stack up and report duplicates).
+  globalScope[CONTENT_SCRIPT_GLOBAL]?.teardown();
+
   interface LinkRoutingPolicy {
     isHomePin: boolean;
     homeUrl: string | null;
@@ -29,6 +43,13 @@
     action: 'SWITCH_SPACE_BY_INDEX';
     payload: {
       index: number;
+    };
+  }
+
+  interface MediaStateChangedMessage {
+    action: 'MEDIA_STATE_CHANGED';
+    payload: {
+      hasPlayingVideo: boolean;
     };
   }
 
@@ -311,7 +332,75 @@
     if (document.visibilityState === 'visible') {
       void refreshPolicy();
     }
+    scheduleMediaReport();
   }
+
+  // --- Video detection -------------------------------------------------------
+  // Chrome surfaces tab audio but not video, so we watch media events (they
+  // don't bubble, but reach the document in the capture phase) and tell the
+  // background whether anything that looks like a real, playing video exists.
+
+  let lastReportedHasVideo: boolean | null = null;
+  let mediaReportTimer: number | null = null;
+
+  function isPlayingVideo(video: HTMLVideoElement): boolean {
+    return (
+      !video.paused &&
+      !video.ended &&
+      video.readyState >= 2 &&
+      video.videoWidth > 0 &&
+      video.videoHeight > 0
+    );
+  }
+
+  function hasPlayingVideo(): boolean {
+    for (const video of document.querySelectorAll('video')) {
+      if (isPlayingVideo(video as HTMLVideoElement)) return true;
+    }
+    return false;
+  }
+
+  function reportMediaState(): void {
+    if (!extensionContextValid()) return;
+
+    const playing = hasPlayingVideo();
+    if (playing === lastReportedHasVideo) return;
+    lastReportedHasVideo = playing;
+
+    const message: MediaStateChangedMessage = {
+      action: 'MEDIA_STATE_CHANGED',
+      payload: { hasPlayingVideo: playing },
+    };
+
+    try {
+      void chrome.runtime.sendMessage(message);
+    } catch {
+      extensionContextValid();
+    }
+  }
+
+  function scheduleMediaReport(): void {
+    if (mediaReportTimer !== null) return;
+    mediaReportTimer = window.setTimeout(() => {
+      mediaReportTimer = null;
+      reportMediaState();
+    }, 250);
+  }
+
+  function handleMediaEvent(): void {
+    scheduleMediaReport();
+  }
+
+  const MEDIA_EVENTS = [
+    'play',
+    'playing',
+    'pause',
+    'ended',
+    'emptied',
+    'loadeddata',
+    'enterpictureinpicture',
+    'leavepictureinpicture',
+  ];
 
   function teardown(): void {
     document.removeEventListener('pointerdown', handlePointerDown, true);
@@ -320,6 +409,13 @@
     window.removeEventListener('pageshow', handlePageShow);
     window.removeEventListener('focus', handleFocus);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
+    for (const type of MEDIA_EVENTS) {
+      document.removeEventListener(type, handleMediaEvent, true);
+    }
+    if (mediaReportTimer !== null) {
+      window.clearTimeout(mediaReportTimer);
+      mediaReportTimer = null;
+    }
   }
 
   function handleClick(event: MouseEvent): void {
@@ -383,6 +479,12 @@
   window.addEventListener('pageshow', handlePageShow);
   window.addEventListener('focus', handleFocus);
   document.addEventListener('visibilitychange', handleVisibilityChange);
+  for (const type of MEDIA_EVENTS) {
+    document.addEventListener(type, handleMediaEvent, true);
+  }
+
+  globalScope[CONTENT_SCRIPT_GLOBAL] = { teardown };
 
   void refreshPolicy();
+  scheduleMediaReport();
 })();

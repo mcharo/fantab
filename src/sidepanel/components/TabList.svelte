@@ -26,6 +26,7 @@
     onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
+    onTogglePiP: (tabId: number) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
     onRemoveHomePin: (homePinId: string) => void;
@@ -62,6 +63,7 @@
     onSelect,
     onClose,
     onToggleMute,
+    onTogglePiP,
     onRename,
     onCreateHomePin,
     onRemoveHomePin,
@@ -167,6 +169,7 @@
             {onSelect}
             {onClose}
             {onToggleMute}
+            {onTogglePiP}
             {onRename}
             {onCreateHomePin}
             {onRemoveHomePin}
@@ -198,6 +201,7 @@
             {onSelect}
             {onClose}
             {onToggleMute}
+            {onTogglePiP}
             {onRename}
             {onCreateHomePin}
             {onRemoveHomePin}
@@ -233,6 +237,8 @@
           {onActivate}
           {onSelect}
           {onClose}
+          {onToggleMute}
+          {onTogglePiP}
           {onRename}
           {onCreateHomePin}
           {onRemoveHomePin}

@@ -16,6 +16,8 @@ export interface BuildPanelStateInput {
   windowId: number | null;
   /** Extension placeholder page URL; matching tabs are hidden from the panel. */
   blankUrl?: string;
+  /** Tab ids the content script has reported as currently playing video. */
+  playingVideoTabIds?: ReadonlySet<number>;
 }
 
 const DEFAULT_GROUP_COLOR: TabGroupColor = 'grey';
@@ -57,6 +59,7 @@ function createOpenPanelTab(
   tab: chrome.tabs.Tab,
   state: StoredStateV6,
   homePin: HomePin | undefined,
+  playingVideoTabIds: ReadonlySet<number>,
 ): PanelTab {
   const id = tabId(tab);
   const url = tabUrl(tab);
@@ -82,6 +85,7 @@ function createOpenPanelTab(
     isActive: !!tab.active,
     isAudible: !!tab.audible,
     isMuted: !!tab.mutedInfo?.muted,
+    isPlayingVideo: playingVideoTabIds.has(id),
     isNativePinned: !!tab.pinned,
     isHomePin: !!homePin,
     isOpen: true,
@@ -108,6 +112,7 @@ function createClosedHomePinPanelTab(homePin: HomePin): PanelTab {
     isActive: false,
     isAudible: false,
     isMuted: false,
+    isPlayingVideo: false,
     isNativePinned: false,
     isHomePin: true,
     isOpen: false,
@@ -122,6 +127,7 @@ export function buildPanelState({
   state,
   windowId,
   blankUrl,
+  playingVideoTabIds = new Set<number>(),
 }: BuildPanelStateInput): PanelState {
   const activeSpace = getActiveSpace(state, windowId);
   const isPlaceholder = (tab: chrome.tabs.Tab) =>
@@ -146,7 +152,7 @@ export function buildPanelState({
     const homePin = homePinsByTabId.get(id);
     if (!homePin && state.tabSpaces[String(id)] !== activeSpace.id) continue;
 
-    const panelTab = createOpenPanelTab(tab, state, homePin);
+    const panelTab = createOpenPanelTab(tab, state, homePin, playingVideoTabIds);
 
     if (homePin) {
       openHomePinIds.add(homePin.id);
