@@ -360,6 +360,7 @@ describe('mergeSyncedPreferences', () => {
       syncEnabled: true,
       closeAllRestoreSeconds: 8,
       closeAllHoldToConfirm: false,
+      enableVideoPreview: true,
     };
     const payload = projectSyncable(baseState(), {
       ...DEFAULT_PREFERENCES,
@@ -368,7 +369,7 @@ describe('mergeSyncedPreferences', () => {
       density: 'comfortable',
     });
 
-    // syncEnabled and closeAllRestoreSeconds are machine-local and must survive.
+    // Non-appearance preferences are machine-local and must survive.
     expect(mergeSyncedPreferences(local, payload)).toEqual({
       tabTitleFontSize: 19,
       theme: 'dark',
@@ -376,6 +377,7 @@ describe('mergeSyncedPreferences', () => {
       syncEnabled: true,
       closeAllRestoreSeconds: 8,
       closeAllHoldToConfirm: false,
+      enableVideoPreview: true,
     });
   });
 });

@@ -1,4 +1,5 @@
 import type {
+  ActiveMedia,
   HomePin,
   PanelGroup,
   PanelState,
@@ -18,6 +19,8 @@ export interface BuildPanelStateInput {
   blankUrl?: string;
   /** Tab ids the content script has reported as currently playing video. */
   playingVideoTabIds?: ReadonlySet<number>;
+  /** The media source the player bar controls, resolved by the background. */
+  activeMedia?: ActiveMedia | null;
 }
 
 const DEFAULT_GROUP_COLOR: TabGroupColor = 'grey';
@@ -128,6 +131,7 @@ export function buildPanelState({
   windowId,
   blankUrl,
   playingVideoTabIds = new Set<number>(),
+  activeMedia = null,
 }: BuildPanelStateInput): PanelState {
   const activeSpace = getActiveSpace(state, windowId);
   const isPlaceholder = (tab: chrome.tabs.Tab) =>
@@ -220,6 +224,7 @@ export function buildPanelState({
     homePins,
     groups: panelGroups,
     ungroupedTabs: ungroupedTabs.sort((a, b) => a.index - b.index),
+    activeMedia,
   };
 }
 

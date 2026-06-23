@@ -21,6 +21,7 @@
     syncEnabled: boolean;
     closeAllRestoreSeconds: number;
     closeAllHoldToConfirm: boolean;
+    enableVideoPreview: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -31,6 +32,7 @@
     onSyncEnabledChange: (enabled: boolean) => void;
     onCloseAllRestoreSecondsChange: (seconds: number) => void;
     onCloseAllHoldToConfirmChange: (hold: boolean) => void;
+    onEnableVideoPreviewChange: (enabled: boolean) => void;
     onEditShortcuts: () => void;
   }
 
@@ -44,6 +46,7 @@
     syncEnabled,
     closeAllRestoreSeconds,
     closeAllHoldToConfirm,
+    enableVideoPreview,
     onClose,
     onExport,
     onImport,
@@ -54,6 +57,7 @@
     onSyncEnabledChange,
     onCloseAllRestoreSecondsChange,
     onCloseAllHoldToConfirmChange,
+    onEnableVideoPreviewChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -236,6 +240,34 @@
           Edit keyboard shortcuts
         </button>
       </div>
+    </section>
+
+    <section class="group">
+      <div class="group-head">
+        <h3>Experimental</h3>
+        <p class="group-desc">
+          Early features that may be less polished or site-dependent.
+        </p>
+      </div>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title">Embedded video preview</span>
+          <span class="toggle-hint">
+            Show the video-preview button in the player bar.
+          </span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={enableVideoPreview}
+          onchange={(event) =>
+            onEnableVideoPreviewChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
     </section>
 
     <section class="group">

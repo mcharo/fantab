@@ -30,6 +30,7 @@
   } from './components/ContextMenu.svelte';
   import DialogHost from './components/DialogHost.svelte';
   import Header from './components/Header.svelte';
+  import PlayerBar from './components/PlayerBar.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
   import SpaceDock from './components/SpaceDock.svelte';
   import TabList from './components/TabList.svelte';
@@ -42,6 +43,7 @@
     homePins: [],
     groups: [],
     ungroupedTabs: [],
+    activeMedia: null,
   };
 
   let panelState = $state<PanelState>(EMPTY_PANEL_STATE);
@@ -85,6 +87,7 @@
   let closeAllHoldToConfirm = $state(
     DEFAULT_PREFERENCES.closeAllHoldToConfirm,
   );
+  let enableVideoPreview = $state(DEFAULT_PREFERENCES.enableVideoPreview);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -318,6 +321,113 @@
       });
   }
 
+  // Injected into the page's main world. Invokes the captured MediaSession
+  // handler for the action (so the site runs its own next/previous/play/pause
+  // logic), falling back to toggling the primary media element for play/pause.
+  // Must stay self-contained — it's serialized and run in the page.
+  function invokeMediaActionInPage(
+    action: 'nexttrack' | 'previoustrack' | 'play' | 'pause',
+  ): void {
+    try {
+      const bridge = (
+        window as unknown as {
+          __fantabMedia?: { invoke?: (action: string) => boolean };
+        }
+      ).__fantabMedia;
+      if (bridge?.invoke && bridge.invoke(action)) return;
+
+      if (action !== 'play' && action !== 'pause') return;
+
+      const media = [
+        ...Array.from(document.querySelectorAll('video')),
+        ...Array.from(document.querySelectorAll('audio')),
+      ] as HTMLMediaElement[];
+      const ready = media.filter((el) => el.readyState >= 2);
+      const playing = ready.filter((el) => !el.paused && !el.ended);
+      const target = (playing.length > 0 ? playing : ready).sort((a, b) => {
+        const areaOf = (el: HTMLMediaElement) => {
+          const rect = el.getBoundingClientRect();
+          return rect.width * rect.height;
+        };
+        return areaOf(b) - areaOf(a);
+      })[0];
+      if (!target) return;
+      if (action === 'play') void target.play().catch(() => {});
+      else target.pause();
+    } catch (error) {
+      console.warn('[fantab] media action failed', error);
+    }
+  }
+
+  // Injected into the page's main world. Applies volume/mute to every media
+  // element (rarely more than one plays at once). Must stay self-contained.
+  function setMediaVolumeInPage(volume: number, muted: boolean): void {
+    try {
+      const clamped = Math.min(1, Math.max(0, volume));
+      const media = [
+        ...Array.from(document.querySelectorAll('video')),
+        ...Array.from(document.querySelectorAll('audio')),
+      ] as HTMLMediaElement[];
+      for (const el of media) {
+        el.volume = clamped;
+        el.muted = muted;
+      }
+    } catch (error) {
+      console.warn('[fantab] volume change failed', error);
+    }
+  }
+
+  function runInActiveMedia<Args extends unknown[]>(
+    func: (...args: Args) => void,
+    args: Args,
+  ): void {
+    const tabId = panelState.activeMedia?.tabId;
+    if (typeof tabId !== 'number') return;
+
+    chrome.scripting
+      .executeScript({ target: { tabId }, world: 'MAIN', func, args })
+      .catch((error: unknown) => {
+        errorMessage =
+          error instanceof Error ? error.message : 'Unable to control media';
+      });
+  }
+
+  function toggleMediaPlayback(): void {
+    runInActiveMedia(invokeMediaActionInPage, [
+      panelState.activeMedia?.isPlaying ? 'pause' : 'play',
+    ]);
+  }
+
+  function mediaNext(): void {
+    runInActiveMedia(invokeMediaActionInPage, ['nexttrack']);
+  }
+
+  function mediaPrev(): void {
+    runInActiveMedia(invokeMediaActionInPage, ['previoustrack']);
+  }
+
+  // Volume drags fire rapidly; throttle the injections (with a trailing call so
+  // the final position always lands).
+  let volumeThrottleTimer: ReturnType<typeof setTimeout> | undefined;
+  let pendingVolume: { volume: number; muted: boolean } | null = null;
+
+  function setMediaVolume(volume: number, muted: boolean): void {
+    pendingVolume = { volume, muted };
+    if (volumeThrottleTimer !== undefined) return;
+
+    const flush = () => {
+      if (!pendingVolume) {
+        volumeThrottleTimer = undefined;
+        return;
+      }
+      const { volume: nextVolume, muted: nextMuted } = pendingVolume;
+      pendingVolume = null;
+      runInActiveMedia(setMediaVolumeInPage, [nextVolume, nextMuted]);
+      volumeThrottleTimer = setTimeout(flush, 100);
+    };
+    flush();
+  }
+
   function findTabByKey(key: string | null): PanelTab | undefined {
     if (!key) return undefined;
     return visibleTabs.find((tab) => tab.key === key);
@@ -536,6 +646,7 @@
       syncEnabled,
       closeAllRestoreSeconds,
       closeAllHoldToConfirm,
+      enableVideoPreview,
     });
   }
 
@@ -566,6 +677,11 @@
 
   function setCloseAllHoldToConfirm(next: boolean) {
     closeAllHoldToConfirm = next;
+    persistPreferences();
+  }
+
+  function setEnableVideoPreview(next: boolean) {
+    enableVideoPreview = next;
     persistPreferences();
   }
 
@@ -663,6 +779,7 @@
       syncEnabled = DEFAULT_PREFERENCES.syncEnabled;
       closeAllRestoreSeconds = DEFAULT_PREFERENCES.closeAllRestoreSeconds;
       closeAllHoldToConfirm = DEFAULT_PREFERENCES.closeAllHoldToConfirm;
+      enableVideoPreview = DEFAULT_PREFERENCES.enableVideoPreview;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -1027,6 +1144,7 @@
       syncEnabled = prefs.syncEnabled;
       closeAllRestoreSeconds = prefs.closeAllRestoreSeconds;
       closeAllHoldToConfirm = prefs.closeAllHoldToConfirm;
+      enableVideoPreview = prefs.enableVideoPreview;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -1114,6 +1232,26 @@
     onRestoreClosed={() => restoreClosedTabs()}
   />
 
+  {#if panelState.activeMedia}
+    <PlayerBar
+      media={panelState.activeMedia}
+      onPlayPause={toggleMediaPlayback}
+      onNext={mediaNext}
+      onPrev={mediaPrev}
+      onSetVolume={setMediaVolume}
+      onActivate={() =>
+        panelState.activeMedia &&
+        sendMessage({
+          action: 'ACTIVATE_TAB',
+          payload: { tabId: panelState.activeMedia.tabId },
+        })}
+      onTogglePiP={() =>
+        panelState.activeMedia &&
+        togglePictureInPicture(panelState.activeMedia.tabId)}
+      {enableVideoPreview}
+    />
+  {/if}
+
   <SpaceDock
     spaces={panelState.spaces}
     activeSpaceId={panelState.activeSpaceId}
@@ -1143,6 +1281,7 @@
       {syncEnabled}
       {closeAllRestoreSeconds}
       {closeAllHoldToConfirm}
+      {enableVideoPreview}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -1153,6 +1292,7 @@
       onSyncEnabledChange={setSyncEnabled}
       onCloseAllRestoreSecondsChange={setCloseAllRestoreSeconds}
       onCloseAllHoldToConfirmChange={setCloseAllHoldToConfirm}
+      onEnableVideoPreviewChange={setEnableVideoPreview}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

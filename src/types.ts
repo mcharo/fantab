@@ -96,6 +96,52 @@ export interface PanelTab {
   status: string | null;
 }
 
+/**
+ * Snapshot of a tab's media playback, reported by the content script. Combines
+ * DOM media-element facts (volume, muted, playing video) with the page's
+ * MediaSession capabilities (next/previous track) relayed by the media bridge.
+ */
+export interface TabMediaState {
+  /** Any audio/video element is present, or the page exposes a media session. */
+  hasMedia: boolean;
+  /** Something (audio or video) is actively playing. */
+  isPlaying: boolean;
+  /** A `<video>` element is currently playing (drives the picture-in-picture button). */
+  isPlayingVideo: boolean;
+  /** A ready `<video>` element exists, so picture-in-picture can be offered. */
+  hasVideo: boolean;
+  /** The site registered a MediaSession `nexttrack` handler. */
+  canNext: boolean;
+  /** The site registered a MediaSession `previoustrack` handler. */
+  canPrev: boolean;
+  /** Volume of the primary media element, 0-1. */
+  volume: number;
+  /** Whether the primary media element is muted. */
+  muted: boolean;
+  /** MediaSession metadata title, when provided. */
+  title: string;
+  /** MediaSession metadata artist, when provided. */
+  artist: string;
+}
+
+/**
+ * The single media source the side panel's player bar controls: the
+ * most-recently-playing media tab in the window, resolved against its tab so we
+ * can show a label and favicon.
+ */
+export interface ActiveMedia {
+  tabId: number;
+  title: string;
+  artist: string;
+  faviconUrl: string;
+  isPlaying: boolean;
+  hasVideo: boolean;
+  canNext: boolean;
+  canPrev: boolean;
+  volume: number;
+  muted: boolean;
+}
+
 export interface PanelGroup {
   id: number;
   title: string;
@@ -113,4 +159,6 @@ export interface PanelState {
   homePins: PanelTab[];
   groups: PanelGroup[];
   ungroupedTabs: PanelTab[];
+  /** The media source the player bar controls, or null when nothing is playing. */
+  activeMedia: ActiveMedia | null;
 }

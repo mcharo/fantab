@@ -17,6 +17,7 @@ export default defineConfig({
         offscreen: resolve(__dirname, 'offscreen.html'),
         background: resolve(__dirname, 'src/background.ts'),
         contentScript: resolve(__dirname, 'src/contentScript.ts'),
+        mediaBridge: resolve(__dirname, 'src/mediaBridge.ts'),
       },
       output: {
         entryFileNames: '[name].js',

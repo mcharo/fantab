@@ -18,13 +18,21 @@ import {
   UNGROUPED_GROUP_ID,
   type CloseFocusTab,
 } from './panelState';
+import {
+  buildActiveMedia,
+  MediaRegistry,
+  pickActiveMediaTabId,
+  type SerializedMediaRegistry,
+} from './mediaRegistry';
 import type {
+  ActiveMedia,
   HomePin,
   PanelState,
   PanelTab,
   Space,
   StoredStateV6,
   TabGroupColor,
+  TabMediaState,
 } from './types';
 import {
   addHomePin,
@@ -128,11 +136,59 @@ const EMPTY_LINK_ROUTING_POLICY: LinkRoutingPolicy = {
 };
 let creatingOffscreenDocument: Promise<void> | null = null;
 
-// Tab ids a content script has reported as currently playing video. Chrome's
-// tabs API exposes audio (`audible`) but nothing for video, so we track it from
-// content-script media events. In-memory only: a fresh report follows whenever
-// the service worker restarts and pages re-run their content scripts.
-const tabsWithPlayingVideo = new Set<number>();
+// Per-tab media state reported by content scripts. Chrome's tabs API exposes
+// audio (`audible`) but nothing about video or fine-grained playback, so we
+// track it from content-script media events. This drives both the per-row
+// picture-in-picture button and the side panel's player bar (which follows the
+// most recently played tab).
+//
+// A steadily-playing tab fires no further media events, so once the MV3 service
+// worker is torn down after idle the rebuilt worker would have an empty registry
+// (and the player bar would vanish) until the user next interacts with the page.
+// To survive restarts we mirror the registry to session storage (in-memory,
+// cleared on browser close) and rehydrate on startup.
+const mediaRegistry = new MediaRegistry();
+const MEDIA_REGISTRY_SESSION_KEY = 'mediaRegistryState';
+
+// Resolves once the registry has been restored from session storage. Every path
+// that reads or mutates the registry awaits this so a report or panel request
+// arriving right after the worker spins up can't race the restore.
+const mediaRegistryHydrated: Promise<void> = (async () => {
+  try {
+    const stored = await chrome.storage.session.get(MEDIA_REGISTRY_SESSION_KEY);
+    mediaRegistry.hydrate(
+      stored[MEDIA_REGISTRY_SESSION_KEY] as SerializedMediaRegistry | undefined,
+    );
+  } catch {
+    // No snapshot yet (first run) or session storage unavailable.
+  }
+})();
+
+function persistMediaRegistry(): void {
+  void chrome.storage.session
+    .set({ [MEDIA_REGISTRY_SESSION_KEY]: mediaRegistry.serialize() })
+    .catch(() => {
+      // Best-effort: a missed write just means a possible rebuild on next wake.
+    });
+}
+
+async function applyMediaUpdate(
+  tabId: number,
+  windowId: number | null,
+  state: TabMediaState,
+): Promise<void> {
+  await mediaRegistryHydrated;
+  if (!mediaRegistry.update(tabId, windowId, state)) return;
+  persistMediaRegistry();
+  void broadcastPanelState();
+}
+
+async function evictMediaTab(tabId: number): Promise<void> {
+  await mediaRegistryHydrated;
+  if (!mediaRegistry.remove(tabId)) return;
+  persistMediaRegistry();
+  broadcastSoon();
+}
 
 interface CopyToClipboardResponse {
   copied: boolean;
@@ -197,6 +253,7 @@ async function getPanelState(
   const [windowId, allTabs] = await Promise.all([
     resolveWindowId(requestedWindowId),
     chrome.tabs.query({}),
+    mediaRegistryHydrated,
   ]);
   const state = await loadReconciledState(allTabs);
   const groups =
@@ -208,8 +265,46 @@ async function getPanelState(
     state,
     windowId,
     blankUrl: placeholderUrl(),
-    playingVideoTabIds: tabsWithPlayingVideo,
+    playingVideoTabIds: mediaRegistry.playingVideoTabIds(),
+    activeMedia: resolveActiveMedia(allTabs, state, windowId),
   });
+}
+
+// Resolve which tab the player bar controls for this window, attaching the tab's
+// favicon and a display label (MediaSession title, else alias, else tab title).
+// Skips (and prunes) records whose tab no longer exists, which can happen if a
+// tab closed while the worker was asleep so onRemoved never ran.
+function resolveActiveMedia(
+  tabs: chrome.tabs.Tab[],
+  state: StoredStateV6,
+  windowId: number | null,
+): ActiveMedia | null {
+  let pruned = false;
+
+  while (true) {
+    const tabId = pickActiveMediaTabId(mediaRegistry.getRecords(), windowId);
+    if (tabId === null) break;
+
+    const record = mediaRegistry.get(tabId);
+    const tab = tabs.find((candidate) => candidate.id === tabId);
+    if (record && tab) {
+      if (pruned) persistMediaRegistry();
+      const alias = state.tabAliases[String(tabId)] ?? '';
+      const fallbackTitle = alias || tab.title || 'Playing media';
+      return buildActiveMedia(
+        tabId,
+        record.state,
+        tab.favIconUrl ?? '',
+        fallbackTitle,
+      );
+    }
+
+    mediaRegistry.remove(tabId);
+    pruned = true;
+  }
+
+  if (pruned) persistMediaRegistry();
+  return null;
 }
 
 function isMediaStateChangedMessage(
@@ -220,16 +315,13 @@ function isMediaStateChangedMessage(
 
 function handleMediaStateChanged(
   sender: chrome.runtime.MessageSender,
-  hasPlayingVideo: boolean,
+  state: TabMediaState,
 ): void {
   const tabId = sender.tab?.id;
   if (typeof tabId !== 'number') return;
 
-  const wasPlaying = tabsWithPlayingVideo.has(tabId);
-  if (hasPlayingVideo) tabsWithPlayingVideo.add(tabId);
-  else tabsWithPlayingVideo.delete(tabId);
-
-  if (wasPlaying !== hasPlayingVideo) void broadcastPanelState();
+  const windowId = sender.tab?.windowId ?? null;
+  void applyMediaUpdate(tabId, windowId, state);
 }
 
 async function broadcastPanelState(): Promise<void> {
@@ -1423,7 +1515,7 @@ async function handleMessage(
 
 chrome.runtime.onMessage.addListener((message: Message, sender, sendResponse) => {
   if (isMediaStateChangedMessage(message)) {
-    handleMediaStateChanged(sender, message.payload.hasPlayingVideo);
+    handleMediaStateChanged(sender, message.payload.state);
     return false;
   }
 
@@ -1855,14 +1947,14 @@ chrome.tabs.onCreated.addListener(() => {
 chrome.tabs.onDetached.addListener(broadcastSoon);
 chrome.tabs.onMoved.addListener(broadcastSoon);
 chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
-  tabsWithPlayingVideo.delete(tabId);
+  void evictMediaTab(tabId);
   if (removeInfo.isWindowClosing) return;
   void handleTabRemoved(tabId, removeInfo.windowId);
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  // A navigation invalidates the previous page's video report; the fresh page's
-  // content script re-reports once it starts playing.
-  if (changeInfo.url) tabsWithPlayingVideo.delete(tabId);
+  // A navigation invalidates the previous page's media report; the fresh page's
+  // content script re-reports once it plays again.
+  if (changeInfo.url) void evictMediaTab(tabId);
   broadcastSoon();
   void runStartupReattach();
 });
@@ -1890,8 +1982,11 @@ chrome.commands.onCommand.addListener((command, tab) => {
 
 // Manifest content scripts only auto-inject on navigation, so tabs open before
 // an install/update/reload keep running the old (or orphaned) script and never
-// report video. Re-inject into existing web tabs; the content script tears down
-// any prior instance of itself, so this is safe even where one already runs.
+// report media. Re-inject into existing web tabs; the content script tears down
+// any prior instance of itself, so this is safe even where one already runs. The
+// main-world media bridge is re-injected too so it captures any MediaSession
+// handlers the page registers from now on (handlers registered before this runs
+// are missed until the page registers them again or reloads).
 async function injectContentScriptIntoOpenTabs(): Promise<void> {
   let tabs: chrome.tabs.Tab[];
   try {
@@ -1903,9 +1998,19 @@ async function injectContentScriptIntoOpenTabs(): Promise<void> {
   await Promise.all(
     tabs.map(async (tab) => {
       if (typeof tab.id !== 'number') return;
+      const tabId = tab.id;
       try {
         await chrome.scripting.executeScript({
-          target: { tabId: tab.id },
+          target: { tabId },
+          files: ['mediaBridge.js'],
+          world: 'MAIN',
+        });
+      } catch {
+        // Restricted pages reject injection; the bridge is best-effort here.
+      }
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId },
           files: ['contentScript.js'],
         });
       } catch {

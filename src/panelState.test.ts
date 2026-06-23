@@ -383,6 +383,37 @@ describe('buildPanelState', () => {
     expect(panelState.ungroupedTabs).toHaveLength(0);
   });
 
+  it('defaults activeMedia to null and passes a provided value through', () => {
+    const withoutMedia = buildPanelState({
+      windowId: 1,
+      state,
+      tabs: [],
+      groups: [],
+    });
+    expect(withoutMedia.activeMedia).toBeNull();
+
+    const activeMedia = {
+      tabId: 2,
+      title: 'Now playing',
+      artist: 'Artist',
+      faviconUrl: 'fav.ico',
+      isPlaying: true,
+      hasVideo: false,
+      canNext: true,
+      canPrev: true,
+      volume: 0.5,
+      muted: false,
+    };
+    const withMedia = buildPanelState({
+      windowId: 1,
+      state,
+      tabs: [],
+      groups: [],
+      activeMedia,
+    });
+    expect(withMedia.activeMedia).toEqual(activeMedia);
+  });
+
   it('uses independent active spaces for different windows', () => {
     const panelState = buildPanelState({
       windowId: 2,

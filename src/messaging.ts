@@ -1,4 +1,4 @@
-import type { SpaceIcon, TabGroupColor } from './types';
+import type { SpaceIcon, TabGroupColor, TabMediaState } from './types';
 
 export interface WindowScopedPayload {
   windowId?: number | null;
@@ -220,13 +220,14 @@ export interface PanelStateUpdatedMessage {
 }
 
 /**
- * Fire-and-forget report from a content script telling the background whether
- * the tab currently has a playing video, so the panel can offer picture-in-
- * picture. Carries no response.
+ * Fire-and-forget report from a content script describing the tab's current
+ * media playback (playing state, volume, track metadata, and whether the page
+ * supports next/previous track), so the panel can offer picture-in-picture and
+ * drive the player bar. Carries no response.
  */
 export interface MediaStateChangedMessage {
   action: 'MEDIA_STATE_CHANGED';
-  payload: { hasPlayingVideo: boolean };
+  payload: { state: TabMediaState };
 }
 
 export interface UrlCopiedMessage {

@@ -30,6 +30,12 @@
       "matches": ["http://*/*", "https://*/*"],
       "js": ["contentScript.js"],
       "run_at": "document_start"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["mediaBridge.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "side_panel": {

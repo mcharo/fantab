@@ -41,10 +41,16 @@ export interface Preferences {
    * single click triggers the close. Machine-local (not synced).
    */
   closeAllHoldToConfirm: boolean;
+  /**
+   * Enables the experimental embedded video preview in the player bar.
+   * Machine-local (not synced).
+   */
+  enableVideoPreview: boolean;
 }
 
 export const DEFAULT_SYNC_ENABLED = false;
 export const DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM = true;
+export const DEFAULT_ENABLE_VIDEO_PREVIEW = false;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   tabTitleFontSize: DEFAULT_TAB_TITLE_FONT_SIZE,
@@ -53,6 +59,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   syncEnabled: DEFAULT_SYNC_ENABLED,
   closeAllRestoreSeconds: DEFAULT_CLOSE_ALL_RESTORE_SECONDS,
   closeAllHoldToConfirm: DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
+  enableVideoPreview: DEFAULT_ENABLE_VIDEO_PREVIEW,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -108,6 +115,10 @@ export function normalizePreferences(value: unknown): Preferences {
       typeof candidate.closeAllHoldToConfirm === 'boolean'
         ? candidate.closeAllHoldToConfirm
         : DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
+    enableVideoPreview:
+      typeof candidate.enableVideoPreview === 'boolean'
+        ? candidate.enableVideoPreview
+        : DEFAULT_ENABLE_VIDEO_PREVIEW,
   };
 }
 

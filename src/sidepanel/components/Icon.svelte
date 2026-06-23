@@ -15,6 +15,13 @@
     | 'settings'
     | 'new-group'
     | 'volume-x'
+    | 'volume-2'
+    | 'play'
+    | 'pause'
+    | 'skip-back'
+    | 'skip-forward'
+    | 'video'
+    | 'video-off'
     | 'pip';
 
   export type IconName = ControlIconName | SpaceIconId;
@@ -91,6 +98,32 @@
     />
     <path d="m16 9 6 6" />
     <path d="m22 9-6 6" />
+  {:else if name === 'volume-2'}
+    <path
+      d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"
+    />
+    <path d="M16 9a5 5 0 0 1 0 6" />
+    <path d="M19.364 18.364a9 9 0 0 0 0-12.728" />
+  {:else if name === 'play'}
+    <polygon points="6 3 20 12 6 21 6 3" />
+  {:else if name === 'pause'}
+    <rect x="14" y="4" width="4" height="16" rx="1" />
+    <rect x="6" y="4" width="4" height="16" rx="1" />
+  {:else if name === 'skip-back'}
+    <polygon points="19 20 9 12 19 4 19 20" />
+    <line x1="5" x2="5" y1="19" y2="5" />
+  {:else if name === 'skip-forward'}
+    <polygon points="5 4 15 12 5 20 5 4" />
+    <line x1="19" x2="19" y1="5" y2="19" />
+  {:else if name === 'video'}
+    <path
+      d="m16 13 5.223 3.482a.5.5 0 0 0 .777-.416V7.87a.5.5 0 0 0-.752-.432L16 10.5"
+    />
+    <rect x="2" y="6" width="14" height="12" rx="2" />
+  {:else if name === 'video-off'}
+    <path d="M10.66 6H14a2 2 0 0 1 2 2v2.5l5.248-3.062A.5.5 0 0 1 22 7.87v8.196" />
+    <path d="M16 16a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2" />
+    <path d="m2 2 20 20" />
   {:else if name === 'pip'}
     <path d="M2 10h6V4" />
     <path d="m2 4 6 6" />
