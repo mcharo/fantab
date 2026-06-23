@@ -285,25 +285,6 @@
     {/if}
   </button>
 
-  {#if tab.isAudible && tab.tabId !== null}
-    <button
-      class="audio-btn"
-      class:muted={tab.isMuted}
-      onclick={(event) => {
-        event.stopPropagation();
-        onToggleMute(tab.tabId!, !tab.isMuted);
-        (event.currentTarget as HTMLButtonElement).blur();
-      }}
-      title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
-    >
-      {#if tab.isMuted}
-        <Icon name="volume-x" size={15} />
-      {:else}
-        <span class="audio-dot"></span>
-      {/if}
-    </button>
-  {/if}
-
   <div class="main">
     <div class="title-line">
       <InlineEdit
@@ -311,6 +292,24 @@
         onSave={(alias) => onRename(tab, alias)}
         className="tab-name"
       />
+      {#if tab.isAudible && tab.tabId !== null}
+        <button
+          class="audio-btn"
+          class:muted={tab.isMuted}
+          onclick={(event) => {
+            event.stopPropagation();
+            onToggleMute(tab.tabId!, !tab.isMuted);
+            (event.currentTarget as HTMLButtonElement).blur();
+          }}
+          title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
+        >
+          {#if tab.isMuted}
+            <Icon name="volume-x" size={15} />
+          {:else}
+            <span class="audio-dot"></span>
+          {/if}
+        </button>
+      {/if}
     </div>
   </div>
 
@@ -345,7 +344,7 @@
         }}
         title="Remove home pin"
       >
-        <Icon name="pin-off" size={15} />
+        <Icon name="pin-off" size={11} />
       </button>
     {:else if tab.tabId !== null}
       <button
@@ -356,7 +355,7 @@
         }}
         title="Pin as home"
       >
-        <Icon name="pin" size={15} />
+        <Icon name="pin" size={11} />
       </button>
     {/if}
 
@@ -390,7 +389,7 @@
     gap: 8px;
     min-height: var(--tab-row-min-height, 36px);
     padding: var(--tab-row-pad-y, 4px) 8px;
-    border-radius: 999px;
+    border-radius: var(--radius-md);
     cursor: default;
     transition:
       background 0.15s,
@@ -523,8 +522,7 @@
     border-radius: var(--radius-sm);
   }
 
-  .favicon-btn:hover,
-  .favicon-btn.home-action {
+  .favicon-btn:hover {
     background: var(--bg-hover);
   }
 
@@ -556,6 +554,7 @@
   .title-line {
     display: flex;
     align-items: center;
+    gap: 4px;
     min-width: 0;
     overflow: hidden;
   }
