@@ -29,6 +29,7 @@
     type ContextMenuItem,
   } from './components/ContextMenu.svelte';
   import DialogHost from './components/DialogHost.svelte';
+  import DownloadsFan from './components/DownloadsFan.svelte';
   import Header from './components/Header.svelte';
   import PlayerBar from './components/PlayerBar.svelte';
   import SettingsDialog from './components/SettingsDialog.svelte';
@@ -88,6 +89,7 @@
     DEFAULT_PREFERENCES.closeAllHoldToConfirm,
   );
   let enableVideoPreview = $state(DEFAULT_PREFERENCES.enableVideoPreview);
+  let showPlayerControls = $state(DEFAULT_PREFERENCES.showPlayerControls);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -452,6 +454,18 @@
     }
   }
 
+  // Pull an existing tab (e.g. the downloads page opened in another space) into
+  // the current space before focusing it, so activating it doesn't drag the
+  // panel over to that tab's old space. Reassigning to the current space is a
+  // no-op when it already lives here.
+  async function revealTabInActiveSpace(tabId: number) {
+    await sendMessage({
+      action: 'MOVE_TAB_TO_SPACE',
+      payload: { spaceId: panelState.activeSpaceId, tabId },
+    });
+    await sendMessage({ action: 'ACTIVATE_TAB', payload: { tabId } });
+  }
+
   async function renameTab(tab: PanelTab, alias: string) {
     await sendMessage({
       action: 'RENAME_TAB_ALIAS',
@@ -647,6 +661,7 @@
       closeAllRestoreSeconds,
       closeAllHoldToConfirm,
       enableVideoPreview,
+      showPlayerControls,
     });
   }
 
@@ -682,6 +697,11 @@
 
   function setEnableVideoPreview(next: boolean) {
     enableVideoPreview = next;
+    persistPreferences();
+  }
+
+  function setShowPlayerControls(next: boolean) {
+    showPlayerControls = next;
     persistPreferences();
   }
 
@@ -780,6 +800,7 @@
       closeAllRestoreSeconds = DEFAULT_PREFERENCES.closeAllRestoreSeconds;
       closeAllHoldToConfirm = DEFAULT_PREFERENCES.closeAllHoldToConfirm;
       enableVideoPreview = DEFAULT_PREFERENCES.enableVideoPreview;
+      showPlayerControls = DEFAULT_PREFERENCES.showPlayerControls;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -1145,6 +1166,7 @@
       closeAllRestoreSeconds = prefs.closeAllRestoreSeconds;
       closeAllHoldToConfirm = prefs.closeAllHoldToConfirm;
       enableVideoPreview = prefs.enableVideoPreview;
+      showPlayerControls = prefs.showPlayerControls;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -1232,7 +1254,7 @@
     onRestoreClosed={() => restoreClosedTabs()}
   />
 
-  {#if panelState.activeMedia}
+  {#if panelState.activeMedia && showPlayerControls}
     <PlayerBar
       media={panelState.activeMedia}
       onPlayPause={toggleMediaPlayback}
@@ -1261,6 +1283,13 @@
     onDeleteSpace={deleteSpace}
   />
 
+  <DownloadsFan
+    onRevealTab={revealTabInActiveSpace}
+    onCloseTab={async (tabId) => {
+      await sendMessage({ action: 'CLOSE_TAB', payload: { tabId } });
+    }}
+  />
+
   {#if contextMenu}
     <ContextMenu
       x={contextMenu.x}
@@ -1282,6 +1311,7 @@
       {closeAllRestoreSeconds}
       {closeAllHoldToConfirm}
       {enableVideoPreview}
+      {showPlayerControls}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -1293,6 +1323,7 @@
       onCloseAllRestoreSecondsChange={setCloseAllRestoreSeconds}
       onCloseAllHoldToConfirmChange={setCloseAllHoldToConfirm}
       onEnableVideoPreviewChange={setEnableVideoPreview}
+      onShowPlayerControlsChange={setShowPlayerControls}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { panelActive } from '../panelActivity';
   import Icon from './Icon.svelte';
 
   interface Props {
@@ -35,6 +36,13 @@
   let holding = $state(false);
   let ready = $state(false);
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
+
+  // The divider stays put, but the Close all button is a low-priority affordance
+  // that stays out of the way until the panel is in use, revealing on focus or
+  // hover (tracked by the shared `panelActive` store so it survives this bar
+  // unmounting/remounting). A pending restore always shows so its time-sensitive
+  // countdown is never hidden.
+  const revealed = $derived(pending || $panelActive);
 
   function tabsLabel(n: number): string {
     return `${n} ${n === 1 ? 'tab' : 'tabs'}`;
@@ -92,6 +100,9 @@
       class="action confirm"
       class:holding
       class:ready
+      class:hidden={!revealed}
+      tabindex={revealed ? undefined : -1}
+      aria-hidden={!revealed}
       style="--hold-ms: {holdMs}ms"
       onpointerdown={startHold}
       onpointerup={releaseHold}
@@ -102,33 +113,38 @@
     >
       <span class="fill" aria-hidden="true"></span>
       <span class="label">
-        Close all
         <Icon name="arrow-down" size={13} />
+        Close all
       </span>
     </button>
   {:else}
     <button
       type="button"
       class="action confirm immediate"
+      class:hidden={!revealed}
+      tabindex={revealed ? undefined : -1}
+      aria-hidden={!revealed}
       onclick={onConfirm}
       title={`Close all ${tabsLabel(count)} below`}
       aria-label={`Close all ${tabsLabel(count)} below`}
     >
       <span class="label">
-        Close all
         <Icon name="arrow-down" size={13} />
+        Close all
       </span>
     </button>
   {/if}
-
-  <span class="rule" aria-hidden="true"></span>
 </div>
 
 <style>
+  /* A single unbroken rule spans the row; the button floats centered on top and
+     masks the line behind it with its own background, so the gap exists only
+     while the button is visible and the line heals when it fades out. */
   .close-all-bar {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 8px;
+    min-height: 24px;
     margin: 12px 8px 7px;
   }
 
@@ -139,13 +155,17 @@
   }
 
   .action {
-    position: relative;
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
     overflow: hidden;
     display: inline-flex;
     align-items: center;
     height: 24px;
     padding: 0 10px;
-    border: 1px solid var(--border-color);
+    /* Borderless when idle; the pill outline only appears on hover. */
+    border: 1px solid transparent;
     border-radius: 999px;
     background: var(--bg-primary);
     color: var(--text-secondary);
@@ -154,9 +174,18 @@
     white-space: nowrap;
     user-select: none;
     touch-action: none;
+    transition: opacity 0.16s ease;
+  }
+
+  /* The divider persists; only the button tucks away until focus/hover. It keeps
+     its layout box so the gap in the rule stays put as it fades in and out. */
+  .action.hidden {
+    opacity: 0;
+    pointer-events: none;
   }
 
   .action:hover {
+    border-color: var(--border-color);
     color: var(--text-primary);
     background: var(--bg-hover);
   }

@@ -561,7 +561,7 @@
 
   :global(.tab-name) {
     font-size: var(--tab-title-font-size, 15px);
-    font-weight: 500;
+    font-weight: 400;
     min-width: 0;
   }
 

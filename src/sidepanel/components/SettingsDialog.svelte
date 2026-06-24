@@ -22,6 +22,7 @@
     closeAllRestoreSeconds: number;
     closeAllHoldToConfirm: boolean;
     enableVideoPreview: boolean;
+    showPlayerControls: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -33,6 +34,7 @@
     onCloseAllRestoreSecondsChange: (seconds: number) => void;
     onCloseAllHoldToConfirmChange: (hold: boolean) => void;
     onEnableVideoPreviewChange: (enabled: boolean) => void;
+    onShowPlayerControlsChange: (enabled: boolean) => void;
     onEditShortcuts: () => void;
   }
 
@@ -47,6 +49,7 @@
     closeAllRestoreSeconds,
     closeAllHoldToConfirm,
     enableVideoPreview,
+    showPlayerControls,
     onClose,
     onExport,
     onImport,
@@ -58,6 +61,7 @@
     onCloseAllRestoreSecondsChange,
     onCloseAllHoldToConfirmChange,
     onEnableVideoPreviewChange,
+    onShowPlayerControlsChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -228,6 +232,56 @@
 
     <section class="group">
       <div class="group-head">
+        <h3>Player</h3>
+        <p class="group-desc">The media controls at the bottom of the panel.</p>
+      </div>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title">Show player controls</span>
+          <span class="toggle-hint">
+            Play, pause, and skip whatever is playing. When off, the bar stays
+            hidden.
+          </span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={showPlayerControls}
+          onchange={(event) =>
+            onShowPlayerControlsChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
+
+      <label class="toggle-row" class:disabled={!showPlayerControls}>
+        <span class="toggle-text">
+          <span class="toggle-title">
+            Embedded video preview
+            <span class="tag">Experimental</span>
+          </span>
+          <span class="toggle-hint">
+            Show the video-preview button in the player bar.
+          </span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={enableVideoPreview}
+          disabled={!showPlayerControls}
+          onchange={(event) =>
+            onEnableVideoPreviewChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
+    </section>
+
+    <section class="group">
+      <div class="group-head">
         <h3>Shortcuts</h3>
         <p class="group-desc">
           Bind keys to switch spaces and copy the current URL. Chrome manages
@@ -240,34 +294,6 @@
           Edit keyboard shortcuts
         </button>
       </div>
-    </section>
-
-    <section class="group">
-      <div class="group-head">
-        <h3>Experimental</h3>
-        <p class="group-desc">
-          Early features that may be less polished or site-dependent.
-        </p>
-      </div>
-
-      <label class="toggle-row">
-        <span class="toggle-text">
-          <span class="toggle-title">Embedded video preview</span>
-          <span class="toggle-hint">
-            Show the video-preview button in the player bar.
-          </span>
-        </span>
-        <input
-          class="toggle"
-          type="checkbox"
-          role="switch"
-          checked={enableVideoPreview}
-          onchange={(event) =>
-            onEnableVideoPreviewChange(
-              (event.currentTarget as HTMLInputElement).checked,
-            )}
-        />
-      </label>
     </section>
 
     <section class="group">
@@ -580,6 +606,12 @@
     border-radius: var(--radius-md);
     background: var(--bg-secondary);
     cursor: pointer;
+    transition: opacity 0.15s ease;
+  }
+
+  .toggle-row.disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   .toggle-text {
@@ -589,9 +621,23 @@
   }
 
   .toggle-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     color: var(--text-primary);
     font-size: 13px;
     font-weight: 600;
+  }
+
+  .tag {
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--active-bg);
+    color: var(--accent-color);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
 
   .toggle-hint {
@@ -609,6 +655,10 @@
     cursor: pointer;
     transition: background 0.15s ease;
     appearance: none;
+  }
+
+  .toggle:disabled {
+    cursor: not-allowed;
   }
 
   .toggle::after {

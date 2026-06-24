@@ -22,7 +22,10 @@
     | 'skip-forward'
     | 'video'
     | 'video-off'
-    | 'pip';
+    | 'pip'
+    | 'download'
+    | 'folder'
+    | 'trash';
 
   export type IconName = ControlIconName | SpaceIconId;
 </script>
@@ -130,6 +133,19 @@
     <path d="M21 10V7a2 2 0 0 0-2-2h-7" />
     <path d="M3 14v2a2 2 0 0 0 2 2h3" />
     <rect x="12" y="13" width="10" height="7" rx="2" />
+  {:else if name === 'download'}
+    <path d="M12 15V3" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+  {:else if name === 'folder'}
+    <path
+      d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+    />
+  {:else if name === 'trash'}
+    <path d="M3 6h18" />
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+    <line x1="10" x2="10" y1="11" y2="17" />
+    <line x1="14" x2="14" y1="11" y2="17" />
   {:else if name === 'circle'}
     <circle cx="12" cy="12" r="9" />
   {:else if name === 'diamond'}

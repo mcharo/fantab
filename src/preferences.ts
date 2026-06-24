@@ -46,11 +46,18 @@ export interface Preferences {
    * Machine-local (not synced).
    */
   enableVideoPreview: boolean;
+  /**
+   * Whether the media player bar is shown at the bottom of the panel when
+   * something is playing. When off, the bar is hidden entirely.
+   * Machine-local (not synced).
+   */
+  showPlayerControls: boolean;
 }
 
 export const DEFAULT_SYNC_ENABLED = false;
 export const DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM = true;
 export const DEFAULT_ENABLE_VIDEO_PREVIEW = false;
+export const DEFAULT_SHOW_PLAYER_CONTROLS = true;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   tabTitleFontSize: DEFAULT_TAB_TITLE_FONT_SIZE,
@@ -60,6 +67,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   closeAllRestoreSeconds: DEFAULT_CLOSE_ALL_RESTORE_SECONDS,
   closeAllHoldToConfirm: DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
   enableVideoPreview: DEFAULT_ENABLE_VIDEO_PREVIEW,
+  showPlayerControls: DEFAULT_SHOW_PLAYER_CONTROLS,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -119,6 +127,10 @@ export function normalizePreferences(value: unknown): Preferences {
       typeof candidate.enableVideoPreview === 'boolean'
         ? candidate.enableVideoPreview
         : DEFAULT_ENABLE_VIDEO_PREVIEW,
+    showPlayerControls:
+      typeof candidate.showPlayerControls === 'boolean'
+        ? candidate.showPlayerControls
+        : DEFAULT_SHOW_PLAYER_CONTROLS,
   };
 }
 

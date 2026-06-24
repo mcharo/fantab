@@ -86,12 +86,12 @@
 
   let pinnedCollapsed = $state(false);
 
-  // The "Close all" bar replaces the old loose-tab separator: shown under the
-  // same condition (loose tabs exist beneath a pinned/group section), plus while
-  // a deferred close is awaiting restore (so the Restore affordance persists).
+  // The "Close all" bar marks the loose-tab region and hosts the Close all /
+  // Restore controls. Its divider is present whenever there are open loose tabs
+  // (independent of panel focus), plus while a deferred close awaits restore (so
+  // the Restore affordance persists).
   const showCloseAllBar = $derived(
-    closeAllPending ||
-      (ungroupedTabs.length > 0 && (homePins.length > 0 || groups.length > 0)),
+    closeAllPending || ungroupedTabs.length > 0,
   );
 
   function homePinDropIndex(targetHomePinId: string): number {

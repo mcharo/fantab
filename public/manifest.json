@@ -18,7 +18,9 @@
     "windows",
     "offscreen",
     "clipboardWrite",
-    "scripting"
+    "scripting",
+    "downloads",
+    "downloads.open"
   ],
   "host_permissions": ["<all_urls>"],
   "background": {

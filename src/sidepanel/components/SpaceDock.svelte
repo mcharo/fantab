@@ -250,15 +250,17 @@
   .space-btn {
     width: 34px;
     height: 34px;
-    background: var(--bg-secondary);
+    /* Bare icon by default; the circle background only reveals on hover. */
+    background: transparent;
     color: var(--text-secondary);
     transition:
-      background 0.15s,
-      color 0.15s,
+      background 0.13s,
+      color 0.13s,
       transform 0.15s;
   }
 
   .space-btn:hover {
+    background: var(--bg-hover);
     color: var(--text-primary);
     transform: translateY(-1px);
   }
@@ -272,11 +274,12 @@
     flex: 0 0 34px;
     width: 34px;
     height: 34px;
-    background: var(--bg-secondary);
+    /* Bare icon by default; the circle background only reveals on hover. */
+    background: transparent;
     color: var(--text-secondary);
     transition:
-      background 0.15s,
-      color 0.15s;
+      background 0.13s,
+      color 0.13s;
   }
 
   .add-space-btn:hover {
