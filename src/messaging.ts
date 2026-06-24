@@ -159,7 +159,7 @@ export interface DeleteSpaceMessage {
 export interface CreateGroupFromTabMessage {
   action: 'CREATE_GROUP_FROM_TAB';
   payload: {
-    tabId: number;
+    tabIds: number[];
     title?: string;
     color?: TabGroupColor;
   } & WindowScopedPayload;

@@ -1099,12 +1099,15 @@ async function handlePreserveCloseFocus(
 }
 
 async function handleCreateGroupFromTab(
-  tabId: number,
+  tabIds: number[],
   title = DEFAULT_GROUP_TITLE,
   color: TabGroupColor = DEFAULT_GROUP_COLOR,
   windowId?: number | null,
 ): Promise<PanelState> {
-  const groupId = await chrome.tabs.group({ tabIds: tabId });
+  if (tabIds.length === 0) return getPanelState(windowId);
+  const groupId = await chrome.tabs.group({
+    tabIds: tabIds as [number, ...number[]],
+  });
   await chrome.tabGroups.update(groupId, { title, color });
   return getPanelState(windowId);
 }
@@ -1484,7 +1487,7 @@ async function handleMessage(
       );
     case 'CREATE_GROUP_FROM_TAB':
       return handleCreateGroupFromTab(
-        message.payload.tabId,
+        message.payload.tabIds,
         message.payload.title,
         message.payload.color,
         message.payload.windowId,

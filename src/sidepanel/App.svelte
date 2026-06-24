@@ -136,11 +136,7 @@
     ...filteredUngroupedTabs,
   ]);
 
-  // When the header is floating (idle) and there's no leading PINNED section,
-  // the first group/tab row would sit under the floating buttons — inset the
-  // list so its right-edge controls stay clear of them.
-  const headerFloating = $derived(!(searchOpen || searchQuery.trim().length > 0));
-  const listTopInset = $derived(headerFloating && filteredHomePins.length === 0);
+  const isSearching = $derived(searchOpen || searchQuery.trim().length > 0);
 
   const activeSpace = $derived(
     panelState.spaces.find((space) => space.id === panelState.activeSpaceId) ??
@@ -477,7 +473,9 @@
     });
   }
 
-  async function createGroupFromTab(tabId: number) {
+  async function createGroupFromTabs(tabIds: number[]) {
+    if (tabIds.length === 0) return;
+
     const result = await promptDialog({
       title: 'New group',
       label: 'Group name',
@@ -486,15 +484,15 @@
     });
     if (result === null) return;
 
+    clearSelection();
     await sendMessage({
       action: 'CREATE_GROUP_FROM_TAB',
-      payload: { tabId, title: result.trim() || 'New Group', color: 'blue' },
+      payload: { tabIds, title: result.trim() || 'New Group', color: 'blue' },
     });
   }
 
-  async function createGroupFromActiveTab() {
-    if (panelState.activeTabId === null) return;
-    await createGroupFromTab(panelState.activeTabId);
+  function collapseSidebar() {
+    window.close();
   }
 
   async function copyToClipboard(text: string) {
@@ -851,6 +849,7 @@
     const tabs = selectedTabs();
     const pinnable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
     const pinned = tabs.filter((tab) => tab.isHomePin && tab.homePinId);
+    const groupable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
     const closable = tabs.filter((tab) => tab.isOpen && tab.tabId !== null);
     const items: ContextMenuItem[] = [];
 
@@ -867,6 +866,15 @@
         type: 'action',
         label: `Unpin ${tabCount(pinned.length)}`,
         onSelect: () => void unpinSelectedTabs(tabs),
+      });
+    }
+
+    if (groupable.length > 0) {
+      items.push({
+        type: 'action',
+        label: `New group from ${tabCount(groupable.length)}`,
+        onSelect: () =>
+          void createGroupFromTabs(groupable.map((tab) => tab.tabId!)),
       });
     }
 
@@ -949,7 +957,7 @@
       items.push({
         type: 'action',
         label: 'New group from tab',
-        onSelect: () => void createGroupFromTab(tab.tabId!),
+        onSelect: () => void createGroupFromTabs([tab.tabId!]),
       });
     }
 
@@ -1193,9 +1201,7 @@
     bind:searchOpen
     onSearchChange={(query) => (searchQuery = query)}
     onOpenSettings={openSettings}
-    onCreateTab={() => sendMessage({ action: 'CREATE_TAB', payload: {} })}
-    onCreateGroup={createGroupFromActiveTab}
-    canCreateGroup={panelState.activeTabId !== null}
+    onCollapse={collapseSidebar}
   />
 
   {#if errorMessage}
@@ -1208,10 +1214,11 @@
     ungroupedTabs={filteredUngroupedTabs}
     spaceName={activeSpace?.name ?? ''}
     spaceIcon={activeSpace?.icon ?? 'circle'}
-    topInset={listTopInset}
+    searching={isSearching}
     {selectedKeys}
     {copiedKey}
     onActivate={activateTab}
+    onCreateTab={() => sendMessage({ action: 'CREATE_TAB', payload: {} })}
     onSelect={selectRow}
     onClose={(tabId) =>
       sendMessage({ action: 'CLOSE_TAB', payload: { tabId } })}

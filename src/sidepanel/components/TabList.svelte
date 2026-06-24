@@ -19,10 +19,11 @@
     ungroupedTabs: PanelTab[];
     spaceName: string;
     spaceIcon: SpaceIcon;
-    topInset?: boolean;
+    searching?: boolean;
     selectedKeys: Set<string>;
     copiedKey: string | null;
     onActivate: (tab: PanelTab) => void;
+    onCreateTab: () => void;
     onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
@@ -56,10 +57,11 @@
     ungroupedTabs,
     spaceName,
     spaceIcon,
-    topInset = false,
+    searching = false,
     selectedKeys,
     copiedKey,
     onActivate,
+    onCreateTab,
     onSelect,
     onClose,
     onToggleMute,
@@ -93,6 +95,10 @@
   const showCloseAllBar = $derived(
     closeAllPending || ungroupedTabs.length > 0,
   );
+
+  // A permanent "+ New Tab" affordance heads the loose-tab region. It's hidden
+  // while searching, where the list is reserved for matches.
+  const showNewTab = $derived(!searching);
 
   function homePinDropIndex(targetHomePinId: string): number {
     return homePins.findIndex((tab) => tab.homePinId === targetHomePinId);
@@ -134,7 +140,6 @@
 
 <div
   class="tab-list"
-  class:topInset
   role="presentation"
   ondragover={(event) => event.preventDefault()}
   ondrop={handleUngroupedDrop}
@@ -227,8 +232,14 @@
     />
   {/if}
 
-  {#if ungroupedTabs.length > 0}
+  {#if showNewTab || ungroupedTabs.length > 0}
     <div class="section default-section">
+      {#if showNewTab}
+        <button class="new-tab-row" type="button" onclick={onCreateTab} title="New tab">
+          <span class="new-tab-icon" aria-hidden="true"><Icon name="plus" size={18} /></span>
+          <span class="new-tab-label">New Tab</span>
+        </button>
+      {/if}
       {#each ungroupedTabs as tab (tab.key)}
         <TabRow
           {tab}
@@ -251,7 +262,7 @@
     </div>
   {/if}
 
-  {#if homePins.length === 0 && groups.length === 0 && ungroupedTabs.length === 0}
+  {#if searching && homePins.length === 0 && groups.length === 0 && ungroupedTabs.length === 0}
     <div class="empty">No matching tabs</div>
   {/if}
 </div>
@@ -263,12 +274,6 @@
     padding: 8px;
   }
 
-  /* Clear the floating header buttons when there's no PINNED section to share
-     their row. */
-  .tab-list.topInset {
-    padding-top: 40px;
-  }
-
   .section {
     display: flex;
     flex-direction: column;
@@ -277,6 +282,43 @@
 
   .default-section {
     padding-top: 4px;
+  }
+
+  /* Permanent action row that mirrors a tab row's metrics so it sits flush with
+     the real tabs beneath it. */
+  .new-tab-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    min-height: var(--tab-row-min-height, 36px);
+    padding: var(--tab-row-pad-y, 4px) 8px;
+    border-radius: var(--radius-md);
+    color: var(--text-secondary);
+    text-align: left;
+    transition:
+      background 0.15s,
+      color 0.15s;
+  }
+
+  .new-tab-row:hover {
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+  }
+
+  .new-tab-icon {
+    flex: 0 0 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+  }
+
+  .new-tab-label {
+    min-width: 0;
+    font-size: var(--tab-title-font-size, 15px);
+    font-weight: 400;
   }
 
   .section-header {

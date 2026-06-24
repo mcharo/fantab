@@ -4,9 +4,7 @@
     searchOpen?: boolean;
     onSearchChange: (query: string) => void;
     onOpenSettings: () => void;
-    onCreateTab: () => void;
-    onCreateGroup: () => void;
-    canCreateGroup: boolean;
+    onCollapse: () => void;
   }
 
   import Icon from './Icon.svelte';
@@ -16,9 +14,7 @@
     searchOpen = $bindable(false),
     onSearchChange,
     onOpenSettings,
-    onCreateTab,
-    onCreateGroup,
-    canCreateGroup,
+    onCollapse,
   }: Props = $props();
 
   let searchInput: HTMLInputElement | undefined = $state(undefined);
@@ -35,14 +31,19 @@
     searchOpen = true;
     requestAnimationFrame(() => searchInput?.focus());
   }
-
 </script>
 
-<header class="header" class:floating={!showSearch} class:docked={showSearch}>
-  <div class="top-row">
-    <div class="actions">
+<header class="toolbar">
+  <div class="bar">
+    <div class="cluster">
+      <button class="tool-btn" onclick={onCollapse} title="Collapse sidebar">
+        <Icon name="sidebar" size={17} />
+      </button>
+      <button class="tool-btn" onclick={onOpenSettings} title="Settings">
+        <Icon name="settings" size={17} />
+      </button>
       <button
-        class="icon-btn"
+        class="tool-btn"
         class:active={showSearch}
         onclick={toggleSearch}
         title={showSearch ? 'Close search' : 'Search tabs'}
@@ -52,20 +53,6 @@
         {:else}
           <Icon name="search" size={17} />
         {/if}
-      </button>
-      <button class="icon-btn" onclick={onOpenSettings} title="Settings">
-        <Icon name="settings" size={17} />
-      </button>
-      <button
-        class="icon-btn"
-        onclick={onCreateGroup}
-        disabled={!canCreateGroup}
-        title="New group from active tab"
-      >
-        <Icon name="new-group" size={17} />
-      </button>
-      <button class="icon-btn" onclick={onCreateTab} title="New tab">
-        <Icon name="plus" size={18} />
       </button>
     </div>
   </div>
@@ -91,7 +78,7 @@
 </header>
 
 <style>
-  .header {
+  .toolbar {
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -99,62 +86,35 @@
     flex-shrink: 0;
   }
 
-  /* Idle: float the buttons over the top-right corner so they reserve no
-     vertical space and the tab list starts at the very top. The empty area
-     lets clicks fall through to the content beneath. */
-  .header.floating {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    z-index: 10;
-    pointer-events: none;
-  }
-
-  .header.floating .actions {
-    pointer-events: auto;
-  }
-
-  /* Searching: dock as a normal band that pushes the list down, keeping the
-     search field and its results fully visible. */
-  .header.docked {
-    position: relative;
-    background: var(--bg-primary);
-    border-bottom: 1px solid var(--border-color);
-  }
-
-  .top-row {
+  .bar {
     display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 12px;
   }
 
-  .actions {
+  .cluster {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 2px;
   }
 
-  .icon-btn {
+  /* Icon-only: no chrome at rest, the rounded button shape fades in on hover. */
+  .tool-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     height: 28px;
     width: 28px;
     border-radius: var(--radius-sm);
-    background: var(--bg-secondary);
+    background: transparent;
     color: var(--text-primary);
+    transition: background 0.12s ease;
   }
 
-  .icon-btn:hover,
-  .icon-btn.active {
+  .tool-btn:hover,
+  .tool-btn.active {
     background: var(--bg-hover);
-  }
-
-  .icon-btn:disabled {
-    cursor: default;
-    opacity: 0.35;
   }
 
   .search {
