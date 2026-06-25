@@ -181,6 +181,7 @@ export interface UpdateGroupMessage {
     groupId: string;
     title?: string;
     collapsed?: boolean;
+    peek?: boolean;
   } & WindowScopedPayload;
 }
 

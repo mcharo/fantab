@@ -343,6 +343,7 @@ export function normalizeState(state: StoredStateV7): StoredStateV7 {
         title: group.title,
         pinned: !!group.pinned,
         collapsed: !!group.collapsed,
+        peek: !!group.peek,
         order: groupIndex,
         createdAt:
           typeof group.createdAt === 'number' ? group.createdAt : Date.now(),
@@ -1073,6 +1074,7 @@ export function createGroup(
     title: options.title?.trim() || DEFAULT_GROUP_TITLE,
     pinned: options.pinned,
     collapsed: false,
+    peek: false,
     order: nextOrder,
     createdAt: Date.now(),
   };
@@ -1089,7 +1091,7 @@ export function createGroup(
 export function updateGroup(
   state: StoredStateV7,
   groupId: string,
-  updates: { title?: string; collapsed?: boolean },
+  updates: { title?: string; collapsed?: boolean; peek?: boolean },
 ): StoredStateV7 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
@@ -1108,6 +1110,7 @@ export function updateGroup(
               updates.collapsed !== undefined
                 ? updates.collapsed
                 : group.collapsed,
+            peek: updates.peek !== undefined ? updates.peek : group.peek,
           }
         : group,
     ),

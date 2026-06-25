@@ -28,6 +28,7 @@
     | 'download'
     | 'folder'
     | 'folder-open'
+    | 'folder-dot'
     | 'trash';
 
   export type IconName = ControlIconName | SpaceIconId;
@@ -156,6 +157,13 @@
     <path
       d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
     />
+  {:else if name === 'folder-dot'}
+    <path
+      d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+    />
+    <circle cx="8" cy="14" r="1" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="14" r="1" fill="currentColor" stroke="none" />
+    <circle cx="16" cy="14" r="1" fill="currentColor" stroke="none" />
   {:else if name === 'trash'}
     <path d="M3 6h18" />
     <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />

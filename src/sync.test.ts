@@ -14,8 +14,14 @@ import {
   writeSync,
   type ConvergenceInputs,
   type SyncMeta,
+  type SyncPayload,
 } from './sync';
-import { DEFAULT_SPACE_ID, type HomePin, type StoredStateV7 } from './types';
+import {
+  DEFAULT_SPACE_ID,
+  type FantabGroup,
+  type HomePin,
+  type StoredStateV7,
+} from './types';
 
 function pin(overrides: Partial<HomePin>): HomePin {
   return {
@@ -28,6 +34,19 @@ function pin(overrides: Partial<HomePin>): HomePin {
     lastKnownTitle: 'Example',
     createdAt: 1,
     order: 0,
+    ...overrides,
+  };
+}
+
+function group(overrides: Partial<FantabGroup>): FantabGroup {
+  return {
+    id: 'group',
+    title: 'Folder',
+    pinned: true,
+    collapsed: false,
+    peek: false,
+    order: 0,
+    createdAt: 1,
     ...overrides,
   };
 }
@@ -107,6 +126,7 @@ describe('projectSyncable', () => {
       icon: 'circle',
       createdAt: 1,
       order: 0,
+      groups: [],
       homePins: [
         {
           id: 'pin-a',
@@ -116,6 +136,7 @@ describe('projectSyncable', () => {
           lastKnownTitle: 'Example',
           createdAt: 1,
           order: 0,
+          groupId: null,
         },
         {
           id: 'pin-b',
@@ -125,6 +146,7 @@ describe('projectSyncable', () => {
           lastKnownTitle: 'Example',
           createdAt: 1,
           order: 1,
+          groupId: null,
         },
       ],
     });
@@ -162,6 +184,29 @@ describe('projectSyncable', () => {
     expect(hashPayload(projectSyncable(a, DEFAULT_PREFERENCES))).toBe(
       hashPayload(projectSyncable(b, DEFAULT_PREFERENCES)),
     );
+  });
+
+  it('syncs pinned folders + membership but not unpinned folders or view state', () => {
+    const state = baseState();
+    state.spaces[0].groups = [
+      group({ id: 'g1', title: 'Reading', collapsed: true, peek: true, order: 0 }),
+      group({ id: 'live', title: 'Live tabs', pinned: false, order: 1 }),
+    ];
+    state.spaces[0].homePins[1].groupId = 'g1';
+
+    const first = projectSyncable(state, DEFAULT_PREFERENCES).spaces[0];
+
+    expect(first.groups).toEqual([
+      { id: 'g1', title: 'Reading', createdAt: 1, order: 0 },
+    ]);
+    // Machine-local view state and unpinned folders never leak into sync.
+    const serialized = JSON.stringify(first.groups);
+    expect(serialized).not.toContain('collapsed');
+    expect(serialized).not.toContain('peek');
+    expect(serialized).not.toContain('live');
+
+    expect(first.homePins.find((p) => p.id === 'pin-a')?.groupId).toBeNull();
+    expect(first.homePins.find((p) => p.id === 'pin-b')?.groupId).toBe('g1');
   });
 });
 
@@ -348,6 +393,79 @@ describe('mergeSyncIntoState', () => {
       preferences: { tabTitleFontSize: 15, theme: 'system', density: 'comfortable' },
     });
     expect(merged.spaces).toHaveLength(2);
+  });
+
+  it('applies synced folders + membership, keeping local view state and unpinned folders', () => {
+    const local = baseState();
+    // Local knows folder g1 with collapsed/peek view state, plus an unpinned
+    // folder backed by a live tab. pin-b is loose locally.
+    local.spaces[0].groups = [
+      group({ id: 'g1', title: 'Stale title', collapsed: true, peek: true }),
+      group({ id: 'live', title: 'Live tabs', pinned: false, order: 1 }),
+    ];
+    local.tabGroupMembership = { '99': 'live' };
+
+    // Remote places pin-b inside g1 and renames it.
+    const remote = baseState();
+    remote.spaces[0].groups = [group({ id: 'g1', title: 'Reading' })];
+    remote.spaces[0].homePins[1].groupId = 'g1';
+
+    const merged = mergeSyncIntoState(local, projectSyncable(remote, prefs));
+    const space = merged.spaces[0];
+
+    expect(space.homePins.find((p) => p.id === 'pin-b')?.groupId).toBe('g1');
+
+    const g1 = space.groups?.find((grp) => grp.id === 'g1');
+    expect(g1?.title).toBe('Reading');
+    expect(g1?.pinned).toBe(true);
+    // collapsed/peek are machine-local and preserved from the local folder.
+    expect(g1?.collapsed).toBe(true);
+    expect(g1?.peek).toBe(true);
+
+    // The device's own unpinned folder survives the pull untouched.
+    expect(space.groups?.some((grp) => grp.id === 'live' && !grp.pinned)).toBe(true);
+  });
+
+  it('preserves local folders + membership when the payload predates folder sync', () => {
+    const local = baseState();
+    local.spaces[0].groups = [group({ id: 'g1', title: 'Reading', collapsed: true })];
+    local.spaces[0].homePins[1].groupId = 'g1';
+
+    // A pre–folder-sync payload omits `groups` and pin `groupId` entirely.
+    const legacyPayload = {
+      schemaVersion: 1,
+      preferences: { tabTitleFontSize: 15, theme: 'system', density: 'comfortable' },
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [
+            { id: 'pin-a', homeUrl: 'https://a.com/', alias: 'A', lastKnownUrl: null, lastKnownTitle: null, createdAt: 1, order: 0 },
+            { id: 'pin-b', homeUrl: 'https://b.com/', alias: 'B', lastKnownUrl: null, lastKnownTitle: null, createdAt: 1, order: 1 },
+          ],
+        },
+      ],
+    } as unknown as SyncPayload;
+
+    const merged = mergeSyncIntoState(local, legacyPayload);
+    const space = merged.spaces[0];
+
+    expect(space.groups?.find((grp) => grp.id === 'g1')?.collapsed).toBe(true);
+    expect(space.homePins.find((p) => p.id === 'pin-b')?.groupId).toBe('g1');
+  });
+
+  it('round-trips folder structure so a merged state reprojects identically (no echo)', () => {
+    const local = baseState();
+    const remote = baseState();
+    remote.spaces[0].groups = [group({ id: 'g1', title: 'Reading' })];
+    remote.spaces[0].homePins[1].groupId = 'g1';
+    const payload = projectSyncable(remote, prefs);
+
+    const merged = mergeSyncIntoState(local, payload);
+    expect(hashPayload(projectSyncable(merged, prefs))).toBe(hashPayload(payload));
   });
 });
 

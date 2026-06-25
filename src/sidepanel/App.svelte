@@ -26,6 +26,7 @@
     type SpaceIcon,
   } from '../types';
   import { mergeSection, type SectionEntry } from './sectionOrder';
+  import { visibleGroupTabs } from '../lib/folderView';
   import { confirmDialog, promptDialog } from './dialog';
   import ContextMenu, {
     type ContextMenuItem,
@@ -146,7 +147,7 @@
 
   function entryTabs(entry: SectionEntry): PanelTab[] {
     if (entry.kind === 'row') return [entry.tab];
-    return entry.group.collapsed ? [] : entry.group.tabs;
+    return visibleGroupTabs(entry.group);
   }
 
   // Open loose tabs currently shown below the separator — what "Close all" acts
@@ -1121,7 +1122,7 @@
 
   async function updateGroup(
     groupId: string,
-    updates: { title?: string; collapsed?: boolean },
+    updates: { title?: string; collapsed?: boolean; peek?: boolean },
   ) {
     await sendMessage({
       action: 'UPDATE_GROUP',

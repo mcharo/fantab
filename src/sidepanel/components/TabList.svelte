@@ -8,6 +8,7 @@
   } from '../../types';
   import { dragState } from '../dragState';
   import type { SectionEntry } from '../sectionOrder';
+  import { visibleGroupTabs } from '../../lib/folderView';
   import CloseAllBar from './CloseAllBar.svelte';
   import GroupHeader from './GroupHeader.svelte';
   import Icon from './Icon.svelte';
@@ -43,7 +44,7 @@
     onGroupContextMenu: (group: PanelGroup, x: number, y: number) => void;
     onUpdateGroup: (
       groupId: string,
-      updates: { title?: string; collapsed?: boolean },
+      updates: { title?: string; collapsed?: boolean; peek?: boolean },
     ) => void;
     onDropMember: (groupId: string, member: GroupMemberRef) => void;
     onRemoveFromGroup: (member: GroupMemberRef) => void;
@@ -203,6 +204,7 @@
 {/snippet}
 
 {#snippet groupBlock(group: PanelGroup)}
+  {@const visibleTabs = visibleGroupTabs(group)}
   <div
     class="folder"
     class:collapsed={group.collapsed}
@@ -225,9 +227,9 @@
       {onOpenAllInGroup}
       onContextMenu={onGroupContextMenu}
     />
-    {#if !group.collapsed && group.tabs.length > 0}
+    {#if visibleTabs.length > 0}
       <div class="section folder-tabs">
-        {#each group.tabs as tab (tab.key)}
+        {#each visibleTabs as tab (tab.key)}
           {@render tabRowItem(tab)}
         {/each}
       </div>

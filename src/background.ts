@@ -12,6 +12,7 @@ import {
   parsePortableSpaceData,
 } from './portableSpaceData';
 import { isAtHome, isSameSiteAsHomeUrl, normalizeHomeUrl } from './lib/url';
+import { visibleGroupTabs } from './lib/folderView';
 import {
   buildPanelState,
   nextFocusTabIdAfterClose,
@@ -578,9 +579,7 @@ function visibleOpenPanelTabs(
 ): Array<PanelTab & { tabId: number }> {
   return [
     ...panelState.homePins,
-    ...allPanelGroups(panelState).flatMap((group) =>
-      group.collapsed ? [] : group.tabs,
-    ),
+    ...allPanelGroups(panelState).flatMap(visibleGroupTabs),
     ...panelState.ungroupedTabs,
   ].filter(
     (tab): tab is PanelTab & { tabId: number } =>
@@ -1758,6 +1757,7 @@ async function handleMessage(
         updateGroup(await loadState(), message.payload.groupId, {
           title: message.payload.title,
           collapsed: message.payload.collapsed,
+          peek: message.payload.peek,
         }),
         message.payload.windowId,
       );

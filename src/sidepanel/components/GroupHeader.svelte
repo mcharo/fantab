@@ -1,6 +1,7 @@
 <script lang="ts">
   import { get } from 'svelte/store';
   import type { PanelGroup } from '../../types';
+  import { visibleGroupTabs } from '../../lib/folderView';
   import { confirmDialog } from '../dialog';
   import { dragState } from '../dragState';
   import Icon from './Icon.svelte';
@@ -14,7 +15,7 @@
     group: PanelGroup;
     onUpdateGroup: (
       groupId: string,
-      updates: { title?: string; collapsed?: boolean },
+      updates: { title?: string; collapsed?: boolean; peek?: boolean },
     ) => void;
     onDropMember: (groupId: string, member: GroupMemberRef) => void;
     onCloseGroup: (groupId: string) => void;
@@ -44,6 +45,17 @@
   );
   const openTabCount = $derived(
     group.tabs.filter((tab) => tab.isOpen).length,
+  );
+
+  // Three folder states drive the glyph: open (folder-open), peeking a member
+  // (folder-dot — collapsed but still showing its last-active tab), and fully
+  // collapsed (folder). "Peeking" is whatever the shared view rule renders.
+  const folderIcon = $derived(
+    !group.collapsed
+      ? 'folder-open'
+      : visibleGroupTabs(group).length > 0
+        ? 'folder-dot'
+        : 'folder',
   );
 
   // The member ref for the current drag if dropping it on this header would add
@@ -115,8 +127,18 @@
     dragActive = false;
   }
 
+  // Collapsing while a member is active enters the persistent "peek" state, so
+  // that tab keeps showing even after focus leaves the folder; collapsing with
+  // no active member fully closes it. Expanding clears peek.
   function toggleCollapsed() {
-    onUpdateGroup(group.id, { collapsed: !group.collapsed });
+    if (group.collapsed) {
+      onUpdateGroup(group.id, { collapsed: false, peek: false });
+    } else {
+      onUpdateGroup(group.id, {
+        collapsed: true,
+        peek: group.tabs.some((tab) => tab.isActive),
+      });
+    }
   }
 
   // A plain click anywhere on the header (a drag fires no click, and right-click
@@ -165,7 +187,7 @@
     title={group.collapsed ? 'Expand folder' : 'Collapse folder'}
     aria-expanded={!group.collapsed}
   >
-    <Icon name={group.collapsed ? 'folder' : 'folder-open'} size={18} />
+    <Icon name={folderIcon} size={18} />
   </button>
 
   <div class="name-wrap">

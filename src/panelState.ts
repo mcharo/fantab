@@ -78,6 +78,7 @@ function createOpenPanelTab(
     isOpen: true,
     atHome,
     status: tab.status ?? null,
+    lastAccessed: tab.lastAccessed ?? 0,
   };
 }
 
@@ -106,6 +107,7 @@ function createClosedHomePinPanelTab(homePin: HomePin): PanelTab {
     isOpen: false,
     atHome: false,
     status: null,
+    lastAccessed: 0,
   };
 }
 
@@ -243,6 +245,7 @@ function toPanelGroup(group: FantabGroup, tabs: PanelTab[]): PanelGroup {
     id: group.id,
     title: group.title?.trim() || 'Untitled Folder',
     collapsed: group.collapsed,
+    peek: !!group.peek,
     pinned: group.pinned,
     order: anchor,
     tabs: members,

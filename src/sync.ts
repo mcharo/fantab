@@ -21,9 +21,9 @@ import {
  *
  * fantab keeps its authoritative, full state (including machine-specific data
  * such as live tab ids and window ids) in {@link chrome.storage.local}. This
- * module mirrors only the *logical* subset — spaces, home pins, and appearance
- * preferences — to {@link chrome.storage.sync} so it follows the user across
- * machines whenever Chrome Sync is enabled.
+ * module mirrors only the *logical* subset — spaces, home pins, pinned folders,
+ * and appearance preferences — to {@link chrome.storage.sync} so it follows the
+ * user across machines whenever Chrome Sync is enabled.
  *
  * `chrome.storage.sync` caps items at 8 KB each (100 KB total), so the payload
  * is serialized and split into byte-bounded chunks alongside a small metadata
@@ -56,6 +56,20 @@ export interface SyncHomePin {
   lastKnownTitle: string | null;
   createdAt: number;
   order: number;
+  /** Id of the pinned folder this pin belongs to, or null when loose. */
+  groupId: string | null;
+}
+
+/**
+ * A synced folder. Only pinned folders sync — their members are stable home
+ * pins. Unpinned folders hold live tabs (machine-specific) and stay local. The
+ * `collapsed`/`peek` view state is also machine-local and intentionally omitted.
+ */
+export interface SyncGroup {
+  id: string;
+  title: string;
+  createdAt: number;
+  order: number;
 }
 
 export interface SyncSpace {
@@ -65,6 +79,7 @@ export interface SyncSpace {
   createdAt: number;
   order: number;
   homePins: SyncHomePin[];
+  groups: SyncGroup[];
 }
 
 export interface SyncPreferences {
@@ -106,9 +121,10 @@ function chunkKey(index: number): string {
 /**
  * Builds the canonical logical projection of the current state + preferences.
  * Machine-specific fields (tab ids, window ids, tab/space assignments,
- * favicons) are intentionally omitted. Spaces and pins are sorted and their
- * `order` reindexed so two machines holding equal data produce identical
- * output (and therefore identical {@link hashPayload}).
+ * favicons, folder collapsed/peek view state) are intentionally omitted. Spaces,
+ * pins, and pinned folders are sorted and their `order` reindexed so two
+ * machines holding equal data produce identical output (and therefore identical
+ * {@link hashPayload}).
  */
 export function projectSyncable(
   state: StoredStateV7,
@@ -116,24 +132,42 @@ export function projectSyncable(
 ): SyncPayload {
   const spaces = [...state.spaces]
     .sort((a, b) => a.order - b.order)
-    .map((space, spaceIndex) => ({
-      id: space.id,
-      name: space.name,
-      icon: space.icon,
-      createdAt: space.createdAt,
-      order: spaceIndex,
-      homePins: [...space.homePins]
+    .map((space, spaceIndex) => {
+      // Only pinned folders sync; unpinned folders hold live tabs and are
+      // inherently machine-local. Reindex order so equal data hashes equally.
+      const groups = [...(space.groups ?? [])]
+        .filter((group) => group.pinned)
         .sort((a, b) => a.order - b.order)
-        .map((pin, pinIndex) => ({
-          id: pin.id,
-          homeUrl: pin.homeUrl,
-          alias: pin.alias,
-          lastKnownUrl: pin.lastKnownUrl,
-          lastKnownTitle: pin.lastKnownTitle,
-          createdAt: pin.createdAt,
-          order: pinIndex,
-        })),
-    }));
+        .map((group, groupIndex) => ({
+          id: group.id,
+          title: group.title,
+          createdAt: group.createdAt,
+          order: groupIndex,
+        }));
+      const pinnedGroupIds = new Set(groups.map((group) => group.id));
+
+      return {
+        id: space.id,
+        name: space.name,
+        icon: space.icon,
+        createdAt: space.createdAt,
+        order: spaceIndex,
+        groups,
+        homePins: [...space.homePins]
+          .sort((a, b) => a.order - b.order)
+          .map((pin, pinIndex) => ({
+            id: pin.id,
+            homeUrl: pin.homeUrl,
+            alias: pin.alias,
+            lastKnownUrl: pin.lastKnownUrl,
+            lastKnownTitle: pin.lastKnownTitle,
+            createdAt: pin.createdAt,
+            order: pinIndex,
+            groupId:
+              pin.groupId && pinnedGroupIds.has(pin.groupId) ? pin.groupId : null,
+          })),
+      };
+    });
 
   return {
     schemaVersion: SYNC_SCHEMA_VERSION,
@@ -269,10 +303,16 @@ export async function readSync(): Promise<{
 
 /**
  * Applies a synced payload onto the local state (whole-payload last-write-wins).
- * Logical space/pin data is replaced by the payload, while machine-local fields
- * (`tabId`, `faviconUrl`) are preserved for pins that survive the merge by id.
- * The result is run through {@link normalizeState} to drop dangling references;
- * callers should follow with `reconcileStateForTabs` to re-bind live tabs.
+ * Logical space/pin/folder data is replaced by the payload, while machine-local
+ * fields are preserved across the merge by id: pins keep their live `tabId` and
+ * `faviconUrl`; pinned folders keep their `collapsed`/`peek` view state; and
+ * each space's unpinned folders (whose members are live tabs) are kept as-is.
+ *
+ * A pre–folder-sync payload omits `groups`/`groupId` entirely; that case falls
+ * back to preserving local folders and membership so an older device can't strip
+ * folders off a newer one during a mixed-version rollout. The result is run
+ * through {@link normalizeState} to drop dangling references; callers should
+ * follow with `reconcileStateForTabs` to re-bind live tabs.
  */
 export function mergeSyncIntoState(
   localState: StoredStateV7,
@@ -284,41 +324,80 @@ export function mergeSyncIntoState(
       localPinById.set(pin.id, pin);
     }
   }
-  // Tab groups are machine-local logical state (not synced); preserve each
-  // space's existing groups across a merge so a pull doesn't drop them.
   const localGroupsBySpaceId = new Map<string, FantabGroup[]>(
     localState.spaces.map((space) => [space.id, space.groups ?? []] as const),
   );
+  const localGroupById = new Map<string, FantabGroup>();
+  for (const groups of localGroupsBySpaceId.values()) {
+    for (const group of groups) localGroupById.set(group.id, group);
+  }
 
   const spaces: Space[] = [...payload.spaces]
     .filter((space) => isNonEmptyString(space?.id) && isNonEmptyString(space?.name))
     .sort((a, b) => a.order - b.order)
-    .map((syncSpace, spaceIndex) => ({
-      id: syncSpace.id,
-      name: syncSpace.name,
-      icon: normalizeSpaceIcon(syncSpace.icon),
-      groups: localGroupsBySpaceId.get(syncSpace.id) ?? [],
-      createdAt: numberOr(syncSpace.createdAt, Date.now()),
-      order: spaceIndex,
-      homePins: (Array.isArray(syncSpace.homePins) ? syncSpace.homePins : [])
-        .filter((pin) => isNonEmptyString(pin?.id) && isNonEmptyString(pin?.homeUrl))
-        .sort((a, b) => a.order - b.order)
-        .map((syncPin, pinIndex): HomePin => {
-          const local = localPinById.get(syncPin.id);
-          return {
-            id: syncPin.id,
-            homeUrl: syncPin.homeUrl,
-            alias: syncPin.alias || syncPin.homeUrl,
-            faviconUrl: local?.faviconUrl ?? '',
-            tabId: local?.tabId ?? null,
-            lastKnownUrl: syncPin.lastKnownUrl ?? null,
-            lastKnownTitle: syncPin.lastKnownTitle ?? null,
-            createdAt: numberOr(syncPin.createdAt, Date.now()),
-            order: pinIndex,
-            groupId: local?.groupId ?? null,
-          };
-        }),
-    }));
+    .map((syncSpace, spaceIndex) => {
+      const localGroups = localGroupsBySpaceId.get(syncSpace.id) ?? [];
+      // Rebuild pinned folders from the payload (carrying over machine-local
+      // collapsed/peek view state) plus this device's own unpinned folders.
+      // A payload without `groups` predates folder sync — keep local folders.
+      const groups: FantabGroup[] = Array.isArray(syncSpace.groups)
+        ? [
+            ...syncSpace.groups
+              .filter((group) => isNonEmptyString(group?.id))
+              .sort((a, b) => a.order - b.order)
+              .map((group): FantabGroup => {
+                const local = localGroupById.get(group.id);
+                return {
+                  id: group.id,
+                  title: isNonEmptyString(group.title)
+                    ? group.title
+                    : local?.title ?? 'New Folder',
+                  pinned: true,
+                  collapsed: local?.collapsed ?? false,
+                  peek: local?.peek ?? false,
+                  order: numberOr(group.order, 0),
+                  createdAt: numberOr(
+                    group.createdAt,
+                    local?.createdAt ?? Date.now(),
+                  ),
+                };
+              }),
+            ...localGroups.filter((group) => !group.pinned),
+          ]
+        : localGroups;
+
+      return {
+        id: syncSpace.id,
+        name: syncSpace.name,
+        icon: normalizeSpaceIcon(syncSpace.icon),
+        groups,
+        createdAt: numberOr(syncSpace.createdAt, Date.now()),
+        order: spaceIndex,
+        homePins: (Array.isArray(syncSpace.homePins) ? syncSpace.homePins : [])
+          .filter((pin) => isNonEmptyString(pin?.id) && isNonEmptyString(pin?.homeUrl))
+          .sort((a, b) => a.order - b.order)
+          .map((syncPin, pinIndex): HomePin => {
+            const local = localPinById.get(syncPin.id);
+            return {
+              id: syncPin.id,
+              homeUrl: syncPin.homeUrl,
+              alias: syncPin.alias || syncPin.homeUrl,
+              faviconUrl: local?.faviconUrl ?? '',
+              tabId: local?.tabId ?? null,
+              lastKnownUrl: syncPin.lastKnownUrl ?? null,
+              lastKnownTitle: syncPin.lastKnownTitle ?? null,
+              createdAt: numberOr(syncPin.createdAt, Date.now()),
+              order: pinIndex,
+              // Honor synced membership (including an explicit null); fall back to
+              // local only for pre–folder-sync payloads that omit the field.
+              groupId:
+                syncPin.groupId !== undefined
+                  ? syncPin.groupId
+                  : local?.groupId ?? null,
+            };
+          }),
+      };
+    });
 
   return normalizeState({
     ...localState,

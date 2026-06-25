@@ -48,6 +48,14 @@ export interface FantabGroup {
   /** Pinned groups hold home pins and persist; unpinned groups hold live tabs. */
   pinned: boolean;
   collapsed: boolean;
+  /**
+   * "Peek" is a third folder state layered on `collapsed`: set when a folder is
+   * collapsed while one of its tabs is active. A peeking folder keeps showing
+   * its last-active member even after focus moves elsewhere (the member is
+   * resolved at render time from `lastAccessed`). Machine-local, like
+   * `collapsed`.
+   */
+  peek?: boolean;
   order: number;
   createdAt: number;
 }
@@ -111,6 +119,11 @@ export interface PanelTab {
   isOpen: boolean;
   atHome: boolean;
   status: string | null;
+  /**
+   * `chrome.tabs.Tab.lastAccessed` (ms since epoch); 0 when never activated or
+   * not open. Used to resolve a collapsed folder's "last active" peek member.
+   */
+  lastAccessed: number;
 }
 
 /**
@@ -163,6 +176,8 @@ export interface PanelGroup {
   id: string;
   title: string;
   collapsed: boolean;
+  /** See {@link FantabGroup.peek}. */
+  peek: boolean;
   pinned: boolean;
   /**
    * Anchor position on the section's order scale (the minimum `order` of its
