@@ -996,10 +996,13 @@
     if (targetSpaces.length > 0 && (tab.homePinId || tab.tabId !== null)) {
       items.push({ type: 'separator' });
 
-      for (const space of targetSpaces) {
-        items.push({
+      items.push({
+        type: 'submenu',
+        label: 'Move to',
+        items: targetSpaces.map((space) => ({
           type: 'action',
-          label: `Move to ${space.name}`,
+          label: space.name,
+          icon: space.icon,
           onSelect: () =>
             void sendMessage({
               action: 'MOVE_TAB_TO_SPACE',
@@ -1009,8 +1012,8 @@
                 homePinId: tab.homePinId ?? undefined,
               },
             }),
-        });
-      }
+        })),
+      });
     }
 
     if (!tab.isHomePin && tab.tabId !== null) {
