@@ -1,10 +1,13 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import type {
     PanelGroup,
     PanelTab,
+    SectionUnitRef,
     SpaceIcon,
-    TabGroupColor,
   } from '../../types';
+  import { dragState } from '../dragState';
+  import type { SectionEntry } from '../sectionOrder';
   import CloseAllBar from './CloseAllBar.svelte';
   import GroupHeader from './GroupHeader.svelte';
   import Icon from './Icon.svelte';
@@ -13,10 +16,14 @@
 
   type DropPosition = 'before' | 'after';
 
+  interface GroupMemberRef {
+    tabId?: number;
+    homePinId?: string;
+  }
+
   interface Props {
-    homePins: PanelTab[];
-    groups: PanelGroup[];
-    ungroupedTabs: PanelTab[];
+    pinnedEntries: SectionEntry[];
+    unpinnedEntries: SectionEntry[];
     spaceName: string;
     spaceIcon: SpaceIcon;
     searching?: boolean;
@@ -33,15 +40,22 @@
     onRemoveHomePin: (homePinId: string) => void;
     onGoHome: (homePinId: string) => void;
     onContextMenu: (tab: PanelTab, x: number, y: number) => void;
-    onMoveToGroup: (tabId: number, groupId: number) => void;
-    onUngroup: (tabId: number) => void;
-    onCloseGroup: (groupId: number) => void;
+    onGroupContextMenu: (group: PanelGroup, x: number, y: number) => void;
     onUpdateGroup: (
-      groupId: number,
-      updates: { title?: string; color?: TabGroupColor; collapsed?: boolean },
+      groupId: string,
+      updates: { title?: string; collapsed?: boolean },
     ) => void;
-    onMoveTab: (tabId: number, index: number) => void;
-    onMoveHomePin: (homePinId: string, index: number) => void;
+    onDropMember: (groupId: string, member: GroupMemberRef) => void;
+    onRemoveFromGroup: (member: GroupMemberRef) => void;
+    onCloseGroup: (groupId: string) => void;
+    onPinGroup: (groupId: string) => void;
+    onUnpinGroup: (groupId: string) => void;
+    onOpenAllInGroup: (groupId: string) => void;
+    onReorder: (
+      dragged: SectionUnitRef,
+      target: SectionUnitRef,
+      position: DropPosition,
+    ) => void;
     closeAllCount: number;
     closeAllPending: boolean;
     closeAllPendingCount: number;
@@ -52,9 +66,8 @@
   }
 
   let {
-    homePins,
-    groups,
-    ungroupedTabs,
+    pinnedEntries,
+    unpinnedEntries,
     spaceName,
     spaceIcon,
     searching = false,
@@ -71,12 +84,15 @@
     onRemoveHomePin,
     onGoHome,
     onContextMenu,
-    onMoveToGroup,
-    onUngroup,
-    onCloseGroup,
+    onGroupContextMenu,
     onUpdateGroup,
-    onMoveTab,
-    onMoveHomePin,
+    onDropMember,
+    onRemoveFromGroup,
+    onCloseGroup,
+    onPinGroup,
+    onUnpinGroup,
+    onOpenAllInGroup,
+    onReorder,
     closeAllCount,
     closeAllPending,
     closeAllPendingCount,
@@ -88,63 +104,144 @@
 
   let pinnedCollapsed = $state(false);
 
+  // Which folder block is currently the drop target for a reorder, and on which
+  // side, so the block can render the insertion line.
+  let folderDropTarget = $state<{ id: string; position: DropPosition } | null>(
+    null,
+  );
+
+  const hasPinnedSection = $derived(pinnedEntries.length > 0);
+
   // The "Close all" bar marks the loose-tab region and hosts the Close all /
   // Restore controls. Its divider is present whenever there are open loose tabs
   // (independent of panel focus), plus while a deferred close awaits restore (so
   // the Restore affordance persists).
   const showCloseAllBar = $derived(
-    closeAllPending || ungroupedTabs.length > 0,
+    closeAllPending || unpinnedEntries.some((entry) => entry.kind === 'row'),
   );
 
   // A permanent "+ New Tab" affordance heads the loose-tab region. It's hidden
   // while searching, where the list is reserved for matches.
   const showNewTab = $derived(!searching);
 
-  function homePinDropIndex(targetHomePinId: string): number {
-    return homePins.findIndex((tab) => tab.homePinId === targetHomePinId);
-  }
-
-  function handleHomePinDrop(
-    homePinId: string,
-    targetHomePinId: string,
-    position: DropPosition,
-  ) {
-    const currentIndex = homePins.findIndex((tab) => tab.homePinId === homePinId);
-    const targetIndex = homePinDropIndex(targetHomePinId);
-    if (currentIndex < 0 || targetIndex < 0) return;
-
-    let insertIndex = targetIndex + (position === 'after' ? 1 : 0);
-    if (currentIndex < insertIndex) insertIndex -= 1;
-
-    if (currentIndex !== insertIndex) onMoveHomePin(homePinId, insertIndex);
-  }
-
-  function parseTabDragPayload(event: DragEvent): number | null {
-    try {
-      const payload = JSON.parse(event.dataTransfer?.getData('text/plain') ?? '');
-      return payload.type === 'tab' && typeof payload.tabId === 'number'
-        ? payload.tabId
-        : null;
-    } catch {
-      return null;
+  // A folder reorder/positioning targets the whole folder block (header + its
+  // tabs), so the drop zone is large. Valid when another folder or a loose item
+  // from the same section is being dragged.
+  function folderReorderValid(group: PanelGroup): boolean {
+    const drag = get(dragState);
+    if (!drag || drag.pinned !== group.pinned) return false;
+    if (drag.ref.kind === 'folder' && drag.ref.groupId === group.id) {
+      return false;
     }
+    return drag.ref.kind === 'folder' || drag.sourceGroupId === null;
   }
 
-  function handleUngroupedDrop(event: DragEvent) {
+  function handleFolderBlockDragOver(event: DragEvent, group: PanelGroup) {
+    if (!folderReorderValid(group)) return;
     event.preventDefault();
     event.stopPropagation();
-    const tabId = parseTabDragPayload(event);
-    if (tabId !== null) onUngroup(tabId);
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const position: DropPosition =
+      event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
+    folderDropTarget = { id: group.id, position };
+  }
+
+  function handleFolderBlockDragLeave(event: DragEvent) {
+    const el = event.currentTarget as HTMLElement;
+    const next = event.relatedTarget as Node | null;
+    if (next && el.contains(next)) return;
+    folderDropTarget = null;
+  }
+
+  function handleFolderBlockDrop(event: DragEvent, group: PanelGroup) {
+    const valid = folderReorderValid(group);
+    const drag = get(dragState);
+    const position =
+      folderDropTarget?.id === group.id ? folderDropTarget.position : 'after';
+    folderDropTarget = null;
+    if (!valid || !drag) return;
+    event.preventDefault();
+    event.stopPropagation();
+    onReorder(drag.ref, { kind: 'folder', groupId: group.id }, position);
+    dragState.set(null);
+  }
+
+  // Dropping a row on empty list space pulls it out of whatever folder it was in
+  // (a no-op for already-loose rows or folder drags).
+  function handleRootDrop(event: DragEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const drag = get(dragState);
+    folderDropTarget = null;
+    dragState.set(null);
+    if (!drag || drag.ref.kind === 'folder' || drag.sourceGroupId === null) {
+      return;
+    }
+    if (drag.ref.kind === 'tab') onRemoveFromGroup({ tabId: drag.ref.tabId });
+    else onRemoveFromGroup({ homePinId: drag.ref.homePinId });
   }
 </script>
+
+{#snippet tabRowItem(tab: PanelTab)}
+  <TabRow
+    {tab}
+    selected={selectedKeys.has(tab.key)}
+    copied={copiedKey === tab.key}
+    {onActivate}
+    {onSelect}
+    {onClose}
+    {onToggleMute}
+    {onTogglePiP}
+    {onRename}
+    {onCreateHomePin}
+    {onRemoveHomePin}
+    {onGoHome}
+    {onContextMenu}
+    {onReorder}
+  />
+{/snippet}
+
+{#snippet groupBlock(group: PanelGroup)}
+  <div
+    class="folder"
+    class:collapsed={group.collapsed}
+    class:dropBefore={folderDropTarget?.id === group.id &&
+      folderDropTarget.position === 'before'}
+    class:dropAfter={folderDropTarget?.id === group.id &&
+      folderDropTarget.position === 'after'}
+    role="presentation"
+    ondragover={(event) => handleFolderBlockDragOver(event, group)}
+    ondragleave={handleFolderBlockDragLeave}
+    ondrop={(event) => handleFolderBlockDrop(event, group)}
+  >
+    <GroupHeader
+      {group}
+      {onUpdateGroup}
+      {onDropMember}
+      {onCloseGroup}
+      {onPinGroup}
+      {onUnpinGroup}
+      {onOpenAllInGroup}
+      onContextMenu={onGroupContextMenu}
+    />
+    {#if !group.collapsed && group.tabs.length > 0}
+      <div class="section folder-tabs">
+        {#each group.tabs as tab (tab.key)}
+          {@render tabRowItem(tab)}
+        {/each}
+      </div>
+    {/if}
+  </div>
+{/snippet}
 
 <div
   class="tab-list"
   role="presentation"
   ondragover={(event) => event.preventDefault()}
-  ondrop={handleUngroupedDrop}
+  ondrop={handleRootDrop}
 >
-  {#if homePins.length > 0}
+  {#if hasPinnedSection}
     <button
       class="section-header"
       aria-expanded={!pinnedCollapsed}
@@ -165,60 +262,16 @@
 
     {#if !pinnedCollapsed}
       <div class="section">
-        {#each homePins as tab (tab.key)}
-          <TabRow
-            {tab}
-            selected={selectedKeys.has(tab.key)}
-            copied={copiedKey === tab.key}
-            {onActivate}
-            {onSelect}
-            {onClose}
-            {onToggleMute}
-            {onTogglePiP}
-            {onRename}
-            {onCreateHomePin}
-            {onRemoveHomePin}
-            {onGoHome}
-            {onContextMenu}
-            onTabDrop={onMoveTab}
-            onHomePinDrop={handleHomePinDrop}
-          />
+        {#each pinnedEntries as entry (entry.kind === 'folder' ? entry.group.id : entry.tab.key)}
+          {#if entry.kind === 'folder'}
+            {@render groupBlock(entry.group)}
+          {:else}
+            {@render tabRowItem(entry.tab)}
+          {/if}
         {/each}
       </div>
     {/if}
   {/if}
-
-  {#each groups as group (group.id)}
-    <GroupHeader
-      {group}
-      {onUpdateGroup}
-      onDropTab={onMoveToGroup}
-      {onCloseGroup}
-    />
-    {#if !group.collapsed}
-      <div class="section">
-        {#each group.tabs as tab (tab.key)}
-          <TabRow
-            {tab}
-            selected={selectedKeys.has(tab.key)}
-            copied={copiedKey === tab.key}
-            {onActivate}
-            {onSelect}
-            {onClose}
-            {onToggleMute}
-            {onTogglePiP}
-            {onRename}
-            {onCreateHomePin}
-            {onRemoveHomePin}
-            {onGoHome}
-            {onContextMenu}
-            onTabDrop={onMoveTab}
-            onHomePinDrop={handleHomePinDrop}
-          />
-        {/each}
-      </div>
-    {/if}
-  {/each}
 
   {#if showCloseAllBar}
     <CloseAllBar
@@ -232,7 +285,7 @@
     />
   {/if}
 
-  {#if showNewTab || ungroupedTabs.length > 0}
+  {#if showNewTab || unpinnedEntries.length > 0}
     <div class="section default-section">
       {#if showNewTab}
         <button class="new-tab-row" type="button" onclick={onCreateTab} title="New tab">
@@ -240,29 +293,18 @@
           <span class="new-tab-label">New Tab</span>
         </button>
       {/if}
-      {#each ungroupedTabs as tab (tab.key)}
-        <TabRow
-          {tab}
-          selected={selectedKeys.has(tab.key)}
-          copied={copiedKey === tab.key}
-          {onActivate}
-          {onSelect}
-          {onClose}
-          {onToggleMute}
-          {onTogglePiP}
-          {onRename}
-          {onCreateHomePin}
-          {onRemoveHomePin}
-          {onGoHome}
-          {onContextMenu}
-          onTabDrop={onMoveTab}
-          onHomePinDrop={handleHomePinDrop}
-        />
+
+      {#each unpinnedEntries as entry (entry.kind === 'folder' ? entry.group.id : entry.tab.key)}
+        {#if entry.kind === 'folder'}
+          {@render groupBlock(entry.group)}
+        {:else}
+          {@render tabRowItem(entry.tab)}
+        {/if}
       {/each}
     </div>
   {/if}
 
-  {#if searching && homePins.length === 0 && groups.length === 0 && ungroupedTabs.length === 0}
+  {#if searching && pinnedEntries.length === 0 && unpinnedEntries.length === 0}
     <div class="empty">No matching tabs</div>
   {/if}
 </div>
@@ -282,6 +324,42 @@
 
   .default-section {
     padding-top: 4px;
+  }
+
+  .folder {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Insertion line shown when reordering a folder before/after this block. */
+  .folder.dropBefore::before,
+  .folder.dropAfter::after {
+    content: '';
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    z-index: 2;
+    height: 2px;
+    border-radius: 999px;
+    background: var(--accent-color);
+    pointer-events: none;
+  }
+
+  .folder.dropBefore::before {
+    top: -2px;
+  }
+
+  .folder.dropAfter::after {
+    bottom: -2px;
+  }
+
+  /* A folder's tabs are indented beneath its header, with a vertical guide line
+     so they read as the folder's contents. */
+  .folder-tabs {
+    margin-left: 13px;
+    padding-left: 9px;
+    border-left: 1px solid var(--border-color);
   }
 
   /* Permanent action row that mirrors a tab row's metrics so it sits flush with

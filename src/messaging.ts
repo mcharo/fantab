@@ -1,4 +1,4 @@
-import type { SpaceIcon, TabGroupColor, TabMediaState } from './types';
+import type { SectionUnitRef, SpaceIcon, TabMediaState } from './types';
 
 export interface WindowScopedPayload {
   windowId?: number | null;
@@ -39,9 +39,19 @@ export interface PreserveCloseFocusMessage {
   payload: { tabIds: number[] } & WindowScopedPayload;
 }
 
-export interface MoveTabMessage {
-  action: 'MOVE_TAB';
-  payload: { tabId: number; index: number } & WindowScopedPayload;
+/**
+ * Reorder a unit (folder, loose home pin, or loose live tab) so it lands
+ * immediately before/after a target unit within the same section. The pinned
+ * section rewrites home-pin order; the unpinned section moves live tabs in the
+ * real browser strip.
+ */
+export interface ReorderSectionMessage {
+  action: 'REORDER_SECTION';
+  payload: {
+    dragged: SectionUnitRef;
+    target: SectionUnitRef;
+    position: 'before' | 'after';
+  } & WindowScopedPayload;
 }
 
 export interface SetTabMutedMessage {
@@ -91,11 +101,6 @@ export interface GoHomeMessage {
 export interface ReopenHomePinMessage {
   action: 'REOPEN_HOME_PIN';
   payload: { homePinId: string } & WindowScopedPayload;
-}
-
-export interface MoveHomePinMessage {
-  action: 'MOVE_HOME_PIN';
-  payload: { homePinId: string; index: number } & WindowScopedPayload;
 }
 
 export interface MoveTabToSpaceMessage {
@@ -156,38 +161,66 @@ export interface DeleteSpaceMessage {
   payload: { spaceId: string } & WindowScopedPayload;
 }
 
-export interface CreateGroupFromTabMessage {
-  action: 'CREATE_GROUP_FROM_TAB';
+/**
+ * Create a fantab group from a selection. A selection that includes any home
+ * pins (or mixes pins and tabs) becomes a pinned group; a selection of only
+ * live tabs becomes an unpinned group.
+ */
+export interface CreateGroupMessage {
+  action: 'CREATE_GROUP';
   payload: {
     tabIds: number[];
+    homePinIds: string[];
     title?: string;
-    color?: TabGroupColor;
   } & WindowScopedPayload;
-}
-
-export interface MoveTabToGroupMessage {
-  action: 'MOVE_TAB_TO_GROUP';
-  payload: { tabId: number; groupId: number } & WindowScopedPayload;
-}
-
-export interface UngroupTabMessage {
-  action: 'UNGROUP_TAB';
-  payload: { tabId: number } & WindowScopedPayload;
 }
 
 export interface UpdateGroupMessage {
   action: 'UPDATE_GROUP';
   payload: {
-    groupId: number;
+    groupId: string;
     title?: string;
-    color?: TabGroupColor;
     collapsed?: boolean;
   } & WindowScopedPayload;
 }
 
+export interface MoveToGroupMessage {
+  action: 'MOVE_TO_GROUP';
+  payload: {
+    groupId: string;
+    tabId?: number;
+    homePinId?: string;
+  } & WindowScopedPayload;
+}
+
+export interface RemoveFromGroupMessage {
+  action: 'REMOVE_FROM_GROUP';
+  payload: { tabId?: number; homePinId?: string } & WindowScopedPayload;
+}
+
+export interface PinGroupMessage {
+  action: 'PIN_GROUP';
+  payload: { groupId: string } & WindowScopedPayload;
+}
+
+export interface UnpinGroupMessage {
+  action: 'UNPIN_GROUP';
+  payload: { groupId: string } & WindowScopedPayload;
+}
+
+export interface OpenAllInGroupMessage {
+  action: 'OPEN_ALL_IN_GROUP';
+  payload: { groupId: string } & WindowScopedPayload;
+}
+
 export interface CloseGroupMessage {
   action: 'CLOSE_GROUP';
-  payload: { groupId: number } & WindowScopedPayload;
+  payload: { groupId: string } & WindowScopedPayload;
+}
+
+export interface DeleteGroupMessage {
+  action: 'DELETE_GROUP';
+  payload: { groupId: string } & WindowScopedPayload;
 }
 
 export interface LinkRoutingPolicy {
@@ -247,7 +280,7 @@ export type RequestMessage =
   | CloseTabMessage
   | CloseTabsMessage
   | PreserveCloseFocusMessage
-  | MoveTabMessage
+  | ReorderSectionMessage
   | SetTabMutedMessage
   | CreateHomePinMessage
   | CreateHomePinsMessage
@@ -257,7 +290,6 @@ export type RequestMessage =
   | RenameTabAliasMessage
   | GoHomeMessage
   | ReopenHomePinMessage
-  | MoveHomePinMessage
   | MoveTabToSpaceMessage
   | ExportSpaceDataMessage
   | ImportSpaceDataMessage
@@ -268,11 +300,15 @@ export type RequestMessage =
   | RenameSpaceMessage
   | UpdateSpaceMessage
   | DeleteSpaceMessage
-  | CreateGroupFromTabMessage
-  | MoveTabToGroupMessage
-  | UngroupTabMessage
+  | CreateGroupMessage
   | UpdateGroupMessage
-  | CloseGroupMessage;
+  | MoveToGroupMessage
+  | RemoveFromGroupMessage
+  | PinGroupMessage
+  | UnpinGroupMessage
+  | OpenAllInGroupMessage
+  | CloseGroupMessage
+  | DeleteGroupMessage;
 
 export type ContentRequestMessage =
   | GetLinkRoutingPolicyMessage

@@ -1,4 +1,4 @@
-export const STORAGE_VERSION = 6;
+export const STORAGE_VERSION = 7;
 export const DEFAULT_SPACE_ID = 'default';
 export const DEFAULT_SPACE_ICON: SpaceIconId = 'circle';
 
@@ -23,17 +23,6 @@ export type SpaceIconId =
  */
 export type SpaceIcon = SpaceIconId | (string & {});
 
-export type TabGroupColor =
-  | 'blue'
-  | 'cyan'
-  | 'green'
-  | 'grey'
-  | 'orange'
-  | 'pink'
-  | 'purple'
-  | 'red'
-  | 'yellow';
-
 export interface HomePin {
   id: string;
   homeUrl: string;
@@ -44,6 +33,23 @@ export interface HomePin {
   lastKnownTitle: string | null;
   createdAt: number;
   order: number;
+  /** Id of the pinned {@link FantabGroup} this pin belongs to, or null/loose. */
+  groupId?: string | null;
+}
+
+/**
+ * A fantab-owned tab group. Used for both pinned groups (members are home pins,
+ * persistent) and unpinned groups (members are live tabs, ephemeral). Replaces
+ * Chrome's native tab groups entirely within the side panel.
+ */
+export interface FantabGroup {
+  id: string;
+  title: string;
+  /** Pinned groups hold home pins and persist; unpinned groups hold live tabs. */
+  pinned: boolean;
+  collapsed: boolean;
+  order: number;
+  createdAt: number;
 }
 
 export interface Space {
@@ -51,17 +57,21 @@ export interface Space {
   name: string;
   icon: SpaceIcon;
   homePins: HomePin[];
+  /** Tab groups owned by this space (both pinned and unpinned). */
+  groups?: FantabGroup[];
   createdAt: number;
   order: number;
 }
 
-export interface StoredStateV6 {
+export interface StoredStateV7 {
   version: typeof STORAGE_VERSION;
   activeSpaceByWindowId: Record<string, string>;
   lastActiveTabBySpace: Record<string, number>;
   spaces: Space[];
   tabAliases: Record<string, string>;
   tabSpaces: Record<string, string>;
+  /** Unpinned-group membership for live tabs: tabId -> group id. */
+  tabGroupMembership?: Record<string, string>;
 }
 
 export type SpaceSummary = {
@@ -77,7 +87,14 @@ export interface PanelTab {
   homePinId: string | null;
   windowId: number | null;
   index: number;
-  groupId: number;
+  /**
+   * Position of this row within its section's unified order scale: a home pin's
+   * `order` for the pinned section, a live tab's strip `index` for the unpinned
+   * section. Used to interleave loose rows with folders.
+   */
+  order: number;
+  /** Id of the fantab group this row belongs to, or null when loose. */
+  groupId: string | null;
   url: string;
   homeUrl: string | null;
   title: string;
@@ -143,21 +160,40 @@ export interface ActiveMedia {
 }
 
 export interface PanelGroup {
-  id: number;
+  id: string;
   title: string;
-  color: TabGroupColor;
   collapsed: boolean;
-  windowId: number;
+  pinned: boolean;
+  /**
+   * Anchor position on the section's order scale (the minimum `order` of its
+   * members), used to slot the folder block among loose rows.
+   */
+  order: number;
   tabs: PanelTab[];
 }
+
+/**
+ * A draggable unit within a section, used to express reorder operations: a
+ * folder block, a loose home pin (pinned section), or a loose live tab
+ * (unpinned section).
+ */
+export type SectionUnitRef =
+  | { kind: 'folder'; groupId: string }
+  | { kind: 'pin'; homePinId: string }
+  | { kind: 'tab'; tabId: number };
 
 export interface PanelState {
   windowId: number | null;
   activeTabId: number | null;
   activeSpaceId: string;
   spaces: SpaceSummary[];
+  /** Loose home pins not assigned to any pinned group. */
   homePins: PanelTab[];
-  groups: PanelGroup[];
+  /** Persistent groups of home pins, shown in the pinned section. */
+  pinnedGroups: PanelGroup[];
+  /** Ephemeral groups of live tabs, shown in the unpinned section. */
+  unpinnedGroups: PanelGroup[];
+  /** Loose live tabs not in any group. */
   ungroupedTabs: PanelTab[];
   /** The media source the player bar controls, or null when nothing is playing. */
   activeMedia: ActiveMedia | null;

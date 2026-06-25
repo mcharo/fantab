@@ -15,6 +15,7 @@
     | 'pin-off'
     | 'settings'
     | 'new-group'
+    | 'open-in-new'
     | 'volume-x'
     | 'volume-2'
     | 'play'
@@ -26,6 +27,7 @@
     | 'pip'
     | 'download'
     | 'folder'
+    | 'folder-open'
     | 'trash';
 
   export type IconName = ControlIconName | SpaceIconId;
@@ -100,6 +102,10 @@
     <path
       d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
     />
+  {:else if name === 'open-in-new'}
+    <path d="M15 3h6v6" />
+    <path d="M10 14 21 3" />
+    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
   {:else if name === 'volume-x'}
     <path
       d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"
@@ -145,6 +151,10 @@
   {:else if name === 'folder'}
     <path
       d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"
+    />
+  {:else if name === 'folder-open'}
+    <path
+      d="m6 14 1.45-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"
     />
   {:else if name === 'trash'}
     <path d="M3 6h18" />

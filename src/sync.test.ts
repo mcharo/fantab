@@ -15,7 +15,7 @@ import {
   type ConvergenceInputs,
   type SyncMeta,
 } from './sync';
-import { DEFAULT_SPACE_ID, type HomePin, type StoredStateV6 } from './types';
+import { DEFAULT_SPACE_ID, type HomePin, type StoredStateV7 } from './types';
 
 function pin(overrides: Partial<HomePin>): HomePin {
   return {
@@ -32,9 +32,9 @@ function pin(overrides: Partial<HomePin>): HomePin {
   };
 }
 
-function baseState(): StoredStateV6 {
+function baseState(): StoredStateV7 {
   return {
-    version: 6,
+    version: 7,
     activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '7': DEFAULT_SPACE_ID },
     lastActiveTabBySpace: { '7:default': 42 },
     spaces: [

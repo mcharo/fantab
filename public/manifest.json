@@ -11,7 +11,6 @@
   },
   "permissions": [
     "tabs",
-    "tabGroups",
     "sidePanel",
     "storage",
     "favicon",

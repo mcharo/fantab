@@ -1,19 +1,18 @@
 import type {
   ActiveMedia,
+  FantabGroup,
   HomePin,
   PanelGroup,
   PanelState,
   PanelTab,
-  StoredStateV6,
-  TabGroupColor,
+  StoredStateV7,
 } from './types';
 import { isAtHome } from './lib/url';
 import { getActiveSpace } from './storage';
 
 export interface BuildPanelStateInput {
   tabs: chrome.tabs.Tab[];
-  groups: chrome.tabGroups.TabGroup[];
-  state: StoredStateV6;
+  state: StoredStateV7;
   windowId: number | null;
   /** Extension placeholder page URL; matching tabs are hidden from the panel. */
   blankUrl?: string;
@@ -22,9 +21,6 @@ export interface BuildPanelStateInput {
   /** The media source the player bar controls, resolved by the background. */
   activeMedia?: ActiveMedia | null;
 }
-
-const DEFAULT_GROUP_COLOR: TabGroupColor = 'grey';
-export const UNGROUPED_GROUP_ID = -1;
 
 function tabId(tab: chrome.tabs.Tab): number {
   return tab.id ?? -1;
@@ -42,25 +38,9 @@ function tabFavicon(tab: chrome.tabs.Tab): string {
   return tab.favIconUrl ?? '';
 }
 
-function normalizeGroupColor(color: string): TabGroupColor {
-  const colors = new Set<string>([
-    'blue',
-    'cyan',
-    'green',
-    'grey',
-    'orange',
-    'pink',
-    'purple',
-    'red',
-    'yellow',
-  ]);
-
-  return colors.has(color) ? (color as TabGroupColor) : DEFAULT_GROUP_COLOR;
-}
-
 function createOpenPanelTab(
   tab: chrome.tabs.Tab,
-  state: StoredStateV6,
+  state: StoredStateV7,
   homePin: HomePin | undefined,
   playingVideoTabIds: ReadonlySet<number>,
 ): PanelTab {
@@ -70,6 +50,9 @@ function createOpenPanelTab(
   const alias = homePin?.alias ?? state.tabAliases[String(id)] ?? null;
   const atHome = homePin ? isAtHome(url, homePin.homeUrl) : false;
   const displayName = alias ?? title;
+  const groupId = homePin
+    ? homePin.groupId ?? null
+    : state.tabGroupMembership?.[String(id)] ?? null;
 
   return {
     key: homePin ? `home:${homePin.id}` : `tab:${id}`,
@@ -77,7 +60,8 @@ function createOpenPanelTab(
     homePinId: homePin?.id ?? null,
     windowId: tab.windowId ?? null,
     index: tab.index ?? 0,
-    groupId: tab.groupId ?? UNGROUPED_GROUP_ID,
+    order: homePin ? homePin.order : tab.index ?? 0,
+    groupId,
     url,
     homeUrl: homePin?.homeUrl ?? null,
     title,
@@ -104,7 +88,8 @@ function createClosedHomePinPanelTab(homePin: HomePin): PanelTab {
     homePinId: homePin.id,
     windowId: null,
     index: homePin.order,
-    groupId: UNGROUPED_GROUP_ID,
+    order: homePin.order,
+    groupId: homePin.groupId ?? null,
     url: homePin.lastKnownUrl ?? homePin.homeUrl,
     homeUrl: homePin.homeUrl,
     title: homePin.lastKnownTitle ?? homePin.alias,
@@ -126,7 +111,6 @@ function createClosedHomePinPanelTab(homePin: HomePin): PanelTab {
 
 export function buildPanelState({
   tabs,
-  groups,
   state,
   windowId,
   blankUrl,
@@ -170,41 +154,58 @@ export function buildPanelState({
     .filter((pin) => !openHomePinIds.has(pin.id))
     .map(createClosedHomePinPanelTab);
 
-  const homePins = [...homePinTabs, ...closedHomePins].sort(
+  const allHomePins = [...homePinTabs, ...closedHomePins].sort(
     (a, b) =>
       homePinOrder(activeSpace.homePins, a) -
       homePinOrder(activeSpace.homePins, b),
   );
 
-  const tabsByGroupId = new Map<number, PanelTab[]>();
-  const ungroupedTabs: PanelTab[] = [];
-
-  for (const panelTab of panelTabs.sort((a, b) => a.index - b.index)) {
-    if (panelTab.groupId === UNGROUPED_GROUP_ID) {
-      ungroupedTabs.push(panelTab);
-      continue;
-    }
-
-    const groupTabs = tabsByGroupId.get(panelTab.groupId) ?? [];
-    groupTabs.push(panelTab);
-    tabsByGroupId.set(panelTab.groupId, groupTabs);
+  const spaceGroups = activeSpace.groups ?? [];
+  const pinnedGroupById = new Map<string, FantabGroup>();
+  const unpinnedGroupById = new Map<string, FantabGroup>();
+  for (const group of spaceGroups) {
+    (group.pinned ? pinnedGroupById : unpinnedGroupById).set(group.id, group);
   }
 
-  const panelGroups: PanelGroup[] = groups
-    .filter((group) => windowId === null || group.windowId === windowId)
-    .map((group) => {
-      const groupTabs = tabsByGroupId.get(group.id) ?? [];
-      return {
-        id: group.id,
-        title: group.title?.trim() || 'Untitled Group',
-        color: normalizeGroupColor(group.color),
-        collapsed: group.collapsed,
-        windowId: group.windowId,
-        tabs: groupTabs.sort((a, b) => a.index - b.index),
-      };
-    })
-    .filter((group) => group.tabs.length > 0)
-    .sort((a, b) => a.tabs[0].index - b.tabs[0].index);
+  // Partition home pins into pinned-group members vs. loose pins.
+  const pinsByGroupId = new Map<string, PanelTab[]>();
+  const homePins: PanelTab[] = [];
+  for (const pin of allHomePins) {
+    if (pin.groupId && pinnedGroupById.has(pin.groupId)) {
+      const list = pinsByGroupId.get(pin.groupId) ?? [];
+      list.push(pin);
+      pinsByGroupId.set(pin.groupId, list);
+    } else {
+      homePins.push(pin);
+    }
+  }
+
+  // Partition live tabs into unpinned-group members vs. loose tabs.
+  const tabsByGroupId = new Map<string, PanelTab[]>();
+  const ungroupedTabs: PanelTab[] = [];
+  for (const panelTab of panelTabs.sort((a, b) => a.index - b.index)) {
+    if (panelTab.groupId && unpinnedGroupById.has(panelTab.groupId)) {
+      const list = tabsByGroupId.get(panelTab.groupId) ?? [];
+      list.push(panelTab);
+      tabsByGroupId.set(panelTab.groupId, list);
+    } else {
+      ungroupedTabs.push(panelTab);
+    }
+  }
+
+  const sortedGroups = [...spaceGroups].sort((a, b) => a.order - b.order);
+
+  // Pinned groups persist even when every member pin is closed.
+  const pinnedGroups: PanelGroup[] = sortedGroups
+    .filter((group) => group.pinned)
+    .map((group) => toPanelGroup(group, pinsByGroupId.get(group.id) ?? []))
+    .filter((group) => group.tabs.length > 0);
+
+  // Unpinned groups are ephemeral — only shown while they hold open tabs.
+  const unpinnedGroups: PanelGroup[] = sortedGroups
+    .filter((group) => !group.pinned)
+    .map((group) => toPanelGroup(group, tabsByGroupId.get(group.id) ?? []))
+    .filter((group) => group.tabs.length > 0);
 
   const activeTab = currentWindowTabs.find((tab) => tab.active);
 
@@ -222,9 +223,29 @@ export function buildPanelState({
       }))
       .sort((a, b) => a.order - b.order),
     homePins,
-    groups: panelGroups,
-    ungroupedTabs: ungroupedTabs.sort((a, b) => a.index - b.index),
+    pinnedGroups,
+    unpinnedGroups,
+    ungroupedTabs,
     activeMedia,
+  };
+}
+
+function toPanelGroup(group: FantabGroup, tabs: PanelTab[]): PanelGroup {
+  const members = group.pinned
+    ? [...tabs].sort((a, b) => a.order - b.order)
+    : [...tabs].sort((a, b) => a.index - b.index);
+  // The block slots among loose rows at its earliest member; an empty folder
+  // falls back to its stored order.
+  const anchor = members.length
+    ? Math.min(...members.map((tab) => tab.order))
+    : group.order;
+  return {
+    id: group.id,
+    title: group.title?.trim() || 'Untitled Folder',
+    collapsed: group.collapsed,
+    pinned: group.pinned,
+    order: anchor,
+    tabs: members,
   };
 }
 

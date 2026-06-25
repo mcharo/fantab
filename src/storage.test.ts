@@ -1,23 +1,38 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  addHomePinToGroup,
   assignTabToSpace,
   assignTabsToActiveSpaces,
+  createGroup,
   createSpace,
   deleteSpace,
+  findGroupById,
   getRememberedActiveTabId,
-  isStoredStateV6,
+  isStoredStateV7,
   loadState,
+  moveGroup,
   moveHomePin,
+  moveHomePinRelativeTo,
   moveHomePinToSpace,
+  normalizeState,
+  planUnpinnedReorder,
   rememberActiveTabForSpace,
   reattachHomePinsToRestoredTabs,
   reconcileStateForTabs,
+  removeGroup,
+  removeTabFromGroup,
   renameSpace,
   renameTabAlias,
+  reorderPinnedSection,
+  setGroupPinned,
+  setHomePinGroup,
+  setTabGroup,
   switchSpace,
+  unpinGroup,
+  updateGroup,
   updateSpaceDetails,
 } from './storage';
-import { DEFAULT_SPACE_ID, type StoredStateV6 } from './types';
+import { DEFAULT_SPACE_ID, type StoredStateV7 } from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   return {
@@ -32,8 +47,8 @@ function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   } as chrome.tabs.Tab;
 }
 
-const baseState: StoredStateV6 = {
-  version: 6,
+const baseState: StoredStateV7 = {
+  version: 7,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -82,13 +97,13 @@ const baseState: StoredStateV6 = {
   },
 };
 
-describe('v6 storage state', () => {
+describe('v7 storage state', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   it('rejects old state and loadState returns an empty default space', async () => {
-    expect(isStoredStateV6({ version: 2, homePins: [], tabAliases: {} })).toBe(
+    expect(isStoredStateV7({ version: 2, homePins: [], tabAliases: {} })).toBe(
       false,
     );
 
@@ -104,7 +119,7 @@ describe('v6 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(6);
+    expect(state.version).toBe(7);
     expect(state.activeSpaceByWindowId.default).toBe(DEFAULT_SPACE_ID);
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabAliases).toEqual({});
@@ -147,7 +162,7 @@ describe('v6 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(6);
+    expect(state.version).toBe(7);
     expect(state.activeSpaceByWindowId.default).toBe('focus');
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
@@ -193,7 +208,7 @@ describe('v6 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(6);
+    expect(state.version).toBe(7);
     expect(state.activeSpaceByWindowId['1']).toBe('focus');
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
@@ -221,22 +236,56 @@ describe('v6 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(6);
+    expect(state.version).toBe(7);
     expect(state.spaces[0].homePins).toHaveLength(2);
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
   });
 
-  it('normalizes existing v6 state that predates active-tab memory', async () => {
+  it('migrates v6 state and initializes empty group fields', async () => {
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({
+            fantab_state: {
+              version: 6,
+              activeSpaceByWindowId: baseState.activeSpaceByWindowId,
+              lastActiveTabBySpace: {},
+              spaces: [
+                {
+                  id: DEFAULT_SPACE_ID,
+                  name: 'Default',
+                  icon: 'circle',
+                  createdAt: 1,
+                  order: 0,
+                  homePins: [],
+                },
+              ],
+              tabAliases: {},
+              tabSpaces: {},
+            },
+          }),
+          set: vi.fn(),
+        },
+      },
+    });
+
+    const state = await loadState();
+    expect(state.version).toBe(7);
+    expect(state.spaces[0].groups).toEqual([]);
+    expect(state.tabGroupMembership).toEqual({});
+  });
+
+  it('normalizes existing v7 state that predates active-tab memory', async () => {
     const storedState = {
-      version: 6,
+      version: 7,
       activeSpaceByWindowId: baseState.activeSpaceByWindowId,
       spaces: baseState.spaces,
       tabAliases: {},
       tabSpaces: {},
     };
 
-    expect(isStoredStateV6(storedState)).toBe(true);
+    expect(isStoredStateV7(storedState)).toBe(true);
 
     vi.stubGlobal('chrome', {
       storage: {
@@ -356,6 +405,24 @@ describe('v6 storage state', () => {
       ['pin-2', 0],
       ['pin-1', 1],
     ]);
+  });
+
+  it('moves a home pin before/after a target pin', () => {
+    const order = (state: StoredStateV7) =>
+      [...state.spaces[0].homePins]
+        .sort((a, b) => a.order - b.order)
+        .map((pin) => pin.id);
+
+    const movedBefore = moveHomePinRelativeTo(
+      baseState,
+      'pin-2',
+      'pin-1',
+      'before',
+    );
+    expect(order(movedBefore)).toEqual(['pin-2', 'pin-1']);
+
+    const movedAfter = moveHomePinRelativeTo(baseState, 'pin-1', 'pin-2', 'after');
+    expect(order(movedAfter)).toEqual(['pin-2', 'pin-1']);
   });
 
   it('moves home pins between spaces and keeps open tabs assigned to the target space', () => {
@@ -506,10 +573,10 @@ describe('reattachHomePinsToRestoredTabs', () => {
   // A pin whose tab disappeared (e.g. after a Chrome restart), plus matching
   // helpers, kept independent of `baseState` so tests never mutate it.
   function lostPinState(
-    overrides: Partial<StoredStateV6['spaces'][number]['homePins'][number]> = {},
-  ): StoredStateV6 {
+    overrides: Partial<StoredStateV7['spaces'][number]['homePins'][number]> = {},
+  ): StoredStateV7 {
     return {
-      version: 6,
+      version: 7,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -612,7 +679,7 @@ describe('reattachHomePinsToRestoredTabs', () => {
   });
 
   it('never reuses a tab already held by another live pin', () => {
-    const state: StoredStateV6 = {
+    const state: StoredStateV7 = {
       ...lostPinState({ id: 'lost', tabId: null }),
       spaces: [
         {
@@ -657,8 +724,8 @@ describe('reattachHomePinsToRestoredTabs', () => {
   });
 
   it('moves a rebound tab into the pin’s own space, not the active space', () => {
-    const state: StoredStateV6 = {
-      version: 6,
+    const state: StoredStateV7 = {
+      version: 7,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -706,8 +773,8 @@ describe('reattachHomePinsToRestoredTabs', () => {
   });
 
   it('prefers a lastKnownUrl match over another pin’s homeUrl match', () => {
-    const state: StoredStateV6 = {
-      version: 6,
+    const state: StoredStateV7 = {
+      version: 7,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -756,5 +823,234 @@ describe('reattachHomePinsToRestoredTabs', () => {
     );
     expect(byId['last-known']).toBe(1000);
     expect(byId['home-only']).toBeNull();
+  });
+});
+
+describe('fantab tab groups', () => {
+  it('creates a group in the active space and assigns members', () => {
+    const created = createGroup(
+      baseState,
+      { title: '  Reading  ', pinned: false },
+      DEFAULT_SPACE_ID,
+    );
+
+    expect(created.groupId).toBeTruthy();
+    const group = findGroupById(created.state, created.groupId);
+    expect(group).toMatchObject({
+      title: 'Reading',
+      pinned: false,
+      collapsed: false,
+      order: 0,
+    });
+
+    const withTab = setTabGroup(created.state, 42, created.groupId);
+    expect(withTab.tabGroupMembership?.['42']).toBe(created.groupId);
+
+    const withoutTab = removeTabFromGroup(withTab, 42);
+    expect(withoutTab.tabGroupMembership?.['42']).toBeUndefined();
+  });
+
+  it('updates title and collapse without blanking the title', () => {
+    const created = createGroup(baseState, { pinned: true }, DEFAULT_SPACE_ID);
+    const updated = updateGroup(created.state, created.groupId, {
+      title: '   ',
+      collapsed: true,
+    });
+
+    const group = findGroupById(updated, created.groupId);
+    expect(group?.title).toBe('New Folder'); // blank title is ignored
+    expect(group?.collapsed).toBe(true);
+  });
+
+  it('sets a home pin into a pinned group and toggles pinned state', () => {
+    const created = createGroup(
+      baseState,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setHomePinGroup(
+      created.state,
+      'pin-1',
+      created.groupId,
+      DEFAULT_SPACE_ID,
+    );
+
+    expect(
+      grouped.spaces[0].homePins.find((pin) => pin.id === 'pin-1')?.groupId,
+    ).toBe(created.groupId);
+
+    const unpinnedGroup = setGroupPinned(grouped, created.groupId, false);
+    expect(findGroupById(unpinnedGroup, created.groupId)?.pinned).toBe(false);
+  });
+
+  it('reorders groups within their space', () => {
+    const first = createGroup(baseState, { title: 'A', pinned: true });
+    const second = createGroup(first.state, { title: 'B', pinned: true });
+
+    const moved = moveGroup(second.state, second.groupId, 0);
+    expect(
+      (moved.spaces[0].groups ?? []).map((group) => [group.title, group.order]),
+    ).toEqual([
+      ['B', 0],
+      ['A', 1],
+    ]);
+  });
+
+  it('reorders a folder relative to a loose pin in the pinned section', () => {
+    // Folder F holds pin-1; pin-2 stays loose (orders: pin-1=0, pin-2=1).
+    const folder = createGroup(baseState, { title: 'F', pinned: true });
+    const withMember = addHomePinToGroup(folder.state, 'pin-1', folder.groupId);
+
+    const order = (state: StoredStateV7) =>
+      [...state.spaces[0].homePins]
+        .sort((a, b) => a.order - b.order)
+        .map((pin) => pin.id);
+
+    // Drop the folder after the loose pin: pin-2 leads, the folder follows.
+    const movedAfter = reorderPinnedSection(
+      withMember,
+      { kind: 'folder', groupId: folder.groupId },
+      { kind: 'pin', homePinId: 'pin-2' },
+      'after',
+    );
+    expect(order(movedAfter)).toEqual(['pin-2', 'pin-1']);
+
+    // Drop the loose pin before the folder: no change (already first).
+    const looseBefore = reorderPinnedSection(
+      withMember,
+      { kind: 'pin', homePinId: 'pin-2' },
+      { kind: 'folder', groupId: folder.groupId },
+      'before',
+    );
+    expect(order(looseBefore)).toEqual(['pin-2', 'pin-1']);
+  });
+
+  it('plans an unpinned block move adjacent to a target', () => {
+    const tabs = [
+      { tabId: 1, index: 0, groupId: 'g' },
+      { tabId: 2, index: 1, groupId: 'g' },
+      { tabId: 3, index: 2, groupId: null },
+    ];
+
+    // Move the loose tab before the folder's block.
+    expect(
+      planUnpinnedReorder(
+        tabs,
+        { kind: 'tab', tabId: 3 },
+        { kind: 'folder', groupId: 'g' },
+        'before',
+      ),
+    ).toEqual({ tabIds: [3], index: 0 });
+
+    // Move the whole folder after the loose tab.
+    expect(
+      planUnpinnedReorder(
+        tabs,
+        { kind: 'folder', groupId: 'g' },
+        { kind: 'tab', tabId: 3 },
+        'after',
+      ),
+    ).toEqual({ tabIds: [1, 2], index: 1 });
+
+    // Dropping a folder onto one of its own members is a no-op.
+    expect(
+      planUnpinnedReorder(
+        tabs,
+        { kind: 'folder', groupId: 'g' },
+        { kind: 'tab', tabId: 1 },
+        'before',
+      ),
+    ).toBeNull();
+  });
+
+  it('removes a group definition and frees its members', () => {
+    const created = createGroup(
+      baseState,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setHomePinGroup(
+      created.state,
+      'pin-1',
+      created.groupId,
+      DEFAULT_SPACE_ID,
+    );
+    const withTab = setTabGroup(grouped, 42, created.groupId);
+
+    const removed = removeGroup(withTab, created.groupId);
+    expect(findGroupById(removed, created.groupId)).toBeUndefined();
+    expect(
+      removed.spaces[0].homePins.find((pin) => pin.id === 'pin-1')?.groupId,
+    ).toBeNull();
+    expect(removed.tabGroupMembership?.['42']).toBeUndefined();
+  });
+
+  it('unpins a group: open pins become loose tabs, closed pins are dropped', () => {
+    // pin-1 is open (tabId 1); add a closed pin in the same pinned group.
+    const created = createGroup(
+      baseState,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    let state = setHomePinGroup(
+      created.state,
+      'pin-1',
+      created.groupId,
+      DEFAULT_SPACE_ID,
+    );
+    state = setHomePinGroup(state, 'pin-2', created.groupId, DEFAULT_SPACE_ID);
+
+    const unpinned = unpinGroup(state, created.groupId);
+
+    // The group survives as an unpinned group...
+    expect(findGroupById(unpinned, created.groupId)?.pinned).toBe(false);
+    // ...the open pin (tabId 1) becomes a loose tab in the group with its alias,
+    // and the closed pin (pin-2) is dropped entirely.
+    expect(unpinned.tabGroupMembership?.['1']).toBe(created.groupId);
+    expect(unpinned.tabAliases['1']).toBe('Mail');
+    expect(unpinned.spaces[0].homePins).toHaveLength(0);
+  });
+
+  it('drops dead unpinned-group membership when reconciling against live tabs', () => {
+    const created = createGroup(
+      baseState,
+      { title: 'Open work', pinned: false },
+      DEFAULT_SPACE_ID,
+    );
+    const withMembership = setTabGroup(created.state, 1, created.groupId);
+
+    const reconciled = reconcileStateForTabs(withMembership, [
+      tab({ id: 1, url: 'https://mail.example.com/' }),
+    ]);
+    expect(reconciled.tabGroupMembership?.['1']).toBe(created.groupId);
+
+    // With no live tabs reconcile drops the membership; normalize then prunes the
+    // now-empty ephemeral group.
+    const emptied = normalizeState(reconcileStateForTabs(withMembership, []));
+    expect(emptied.tabGroupMembership?.['1']).toBeUndefined();
+    expect(findGroupById(emptied, created.groupId)).toBeUndefined();
+  });
+
+  it('normalizeState keeps a pinned group only while a pin references it', () => {
+    const created = createGroup(
+      baseState,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    // No pin references the group, so normalize prunes the orphaned definition.
+    expect(
+      findGroupById(normalizeState(created.state), created.groupId),
+    ).toBeUndefined();
+
+    // Once a pin references it, normalize keeps it.
+    const grouped = setHomePinGroup(
+      created.state,
+      'pin-1',
+      created.groupId,
+      DEFAULT_SPACE_ID,
+    );
+    expect(
+      findGroupById(normalizeState(grouped), created.groupId),
+    ).toBeDefined();
   });
 });

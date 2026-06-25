@@ -15,7 +15,6 @@ import { isAtHome, isSameSiteAsHomeUrl, normalizeHomeUrl } from './lib/url';
 import {
   buildPanelState,
   nextFocusTabIdAfterClose,
-  UNGROUPED_GROUP_ID,
   type CloseFocusTab,
 } from './panelState';
 import {
@@ -27,38 +26,50 @@ import {
 import type {
   ActiveMedia,
   HomePin,
+  PanelGroup,
   PanelState,
   PanelTab,
   Space,
-  StoredStateV6,
-  TabGroupColor,
+  StoredStateV7,
   TabMediaState,
 } from './types';
 import {
   addHomePin,
+  addHomePinToGroup,
   assignTabToSpace,
   createDefaultState,
+  createGroup,
   createSpace,
   deleteSpace,
+  findGroupById,
   findHomePinById,
   findHomePinByTabId,
   getActiveSpace,
   getRememberedActiveTabId,
   generateId,
   loadState,
-  moveHomePin,
+  moveHomePinRelativeTo,
   moveHomePinToSpace,
+  planUnpinnedReorder,
   reattachHomePinsToRestoredTabs,
   reconcileStateForTabs,
   rememberActiveTabForSpace,
+  removeGroup,
   removeHomePin,
   removeTabAlias,
+  removeTabFromGroup,
   renameSpace,
   renameTabAlias,
+  reorderPinnedSection,
   saveState,
+  setGroupPinned,
+  setHomePinGroup,
+  setTabGroup,
   statesEqual,
   STORAGE_KEY,
   switchSpace,
+  unpinGroup,
+  updateGroup,
   updateHomePin,
   updateSpaceDetails,
 } from './storage';
@@ -86,8 +97,6 @@ import {
   type SyncState,
 } from './sync';
 
-const DEFAULT_GROUP_TITLE = 'New Group';
-const DEFAULT_GROUP_COLOR = 'blue';
 const COPY_CURRENT_URL_COMMAND = 'copy-current-url';
 const SWITCH_SPACE_COMMAND_PREFIX = 'switch-space-';
 const OFFSCREEN_DOCUMENT_PATH = 'offscreen.html';
@@ -99,7 +108,7 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'CLOSE_TAB',
   'CLOSE_TABS',
   'PRESERVE_CLOSE_FOCUS',
-  'MOVE_TAB',
+  'REORDER_SECTION',
   'SET_TAB_MUTED',
   'CREATE_HOME_PIN',
   'CREATE_HOME_PINS',
@@ -109,7 +118,6 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'RENAME_TAB_ALIAS',
   'GO_HOME',
   'REOPEN_HOME_PIN',
-  'MOVE_HOME_PIN',
   'MOVE_TAB_TO_SPACE',
   'EXPORT_SPACE_DATA',
   'IMPORT_SPACE_DATA',
@@ -120,11 +128,15 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'RENAME_SPACE',
   'UPDATE_SPACE',
   'DELETE_SPACE',
-  'CREATE_GROUP_FROM_TAB',
-  'MOVE_TAB_TO_GROUP',
-  'UNGROUP_TAB',
+  'CREATE_GROUP',
   'UPDATE_GROUP',
+  'MOVE_TO_GROUP',
+  'REMOVE_FROM_GROUP',
+  'PIN_GROUP',
+  'UNPIN_GROUP',
+  'OPEN_ALL_IN_GROUP',
   'CLOSE_GROUP',
+  'DELETE_GROUP',
 ]);
 const CONTENT_REQUEST_ACTIONS = new Set<ContentRequestMessage['action']>([
   'GET_LINK_ROUTING_POLICY',
@@ -221,7 +233,7 @@ async function getCurrentWindowId(): Promise<number | null> {
 
 async function loadReconciledState(
   liveTabs: chrome.tabs.Tab[],
-): Promise<StoredStateV6> {
+): Promise<StoredStateV7> {
   const state = await loadState();
   const reconciled = reconcileStateForTabs(state, liveTabs);
 
@@ -256,12 +268,9 @@ async function getPanelState(
     mediaRegistryHydrated,
   ]);
   const state = await loadReconciledState(allTabs);
-  const groups =
-    windowId === null ? [] : await chrome.tabGroups.query({ windowId });
 
   return buildPanelState({
     tabs: allTabs,
-    groups,
     state,
     windowId,
     blankUrl: placeholderUrl(),
@@ -276,7 +285,7 @@ async function getPanelState(
 // tab closed while the worker was asleep so onRemoved never ran.
 function resolveActiveMedia(
   tabs: chrome.tabs.Tab[],
-  state: StoredStateV6,
+  state: StoredStateV7,
   windowId: number | null,
 ): ActiveMedia | null {
   let pruned = false;
@@ -474,7 +483,7 @@ async function handleCopyCurrentUrlCommand(
 }
 
 function getLinkRoutingPolicyForTab(
-  state: StoredStateV6,
+  state: StoredStateV7,
   tab: chrome.tabs.Tab | undefined,
 ): LinkRoutingPolicy {
   if (typeof tab?.id !== 'number') return EMPTY_LINK_ROUTING_POLICY;
@@ -490,12 +499,12 @@ function getLinkRoutingPolicyForTab(
   };
 }
 
-async function getStateForLinkRouting(): Promise<StoredStateV6> {
+async function getStateForLinkRouting(): Promise<StoredStateV7> {
   return loadReconciledState(await chrome.tabs.query({}));
 }
 
 async function broadcastLinkRoutingPolicies(
-  state?: StoredStateV6,
+  state?: StoredStateV7,
 ): Promise<void> {
   try {
     const tabs = await chrome.tabs.query({});
@@ -521,7 +530,7 @@ async function broadcastLinkRoutingPolicies(
 }
 
 async function saveAndBroadcast(
-  state: StoredStateV6,
+  state: StoredStateV7,
   windowId?: number | null,
 ): Promise<PanelState> {
   await saveState(state);
@@ -541,7 +550,11 @@ function tabTitle(tab: chrome.tabs.Tab): string {
   return tab.title ?? (tabUrl(tab) || 'Untitled');
 }
 
-function createHomePinFromTab(tab: chrome.tabs.Tab, order: number): HomePin {
+function createHomePinFromTab(
+  tab: chrome.tabs.Tab,
+  order: number,
+  groupId: string | null = null,
+): HomePin {
   return {
     id: generateId(),
     homeUrl: tabUrl(tab),
@@ -552,7 +565,12 @@ function createHomePinFromTab(tab: chrome.tabs.Tab, order: number): HomePin {
     lastKnownTitle: tab.title ?? null,
     createdAt: Date.now(),
     order,
+    groupId,
   };
+}
+
+function allPanelGroups(panelState: PanelState): PanelGroup[] {
+  return [...panelState.pinnedGroups, ...panelState.unpinnedGroups];
 }
 
 function visibleOpenPanelTabs(
@@ -560,7 +578,7 @@ function visibleOpenPanelTabs(
 ): Array<PanelTab & { tabId: number }> {
   return [
     ...panelState.homePins,
-    ...panelState.groups.flatMap((group) =>
+    ...allPanelGroups(panelState).flatMap((group) =>
       group.collapsed ? [] : group.tabs,
     ),
     ...panelState.ungroupedTabs,
@@ -575,7 +593,7 @@ function openPanelTabs(
 ): Array<PanelTab & { tabId: number }> {
   return [
     ...panelState.homePins,
-    ...panelState.groups.flatMap((group) => group.tabs),
+    ...allPanelGroups(panelState).flatMap((group) => group.tabs),
     ...panelState.ungroupedTabs,
   ].filter(
     (tab): tab is PanelTab & { tabId: number } =>
@@ -619,17 +637,7 @@ async function createTabInWindow(
       ? { active: true, url, windowId }
       : { active: true, url };
 
-  const tab = await chrome.tabs.create(createProperties);
-
-  if (typeof tab.id === 'number') {
-    try {
-      await chrome.tabs.ungroup(tab.id);
-    } catch {
-      // The tab may already be ungrouped.
-    }
-  }
-
-  return tab;
+  return chrome.tabs.create(createProperties);
 }
 
 async function focusVisibleTabInSpace(
@@ -657,7 +665,7 @@ async function focusVisibleTabInSpace(
 }
 
 function tabBelongsToSpace(
-  state: StoredStateV6,
+  state: StoredStateV7,
   tabId: number,
   space: Space,
 ): boolean {
@@ -667,7 +675,7 @@ function tabBelongsToSpace(
   );
 }
 
-function spaceIdForTab(state: StoredStateV6, tabId: number): string | null {
+function spaceIdForTab(state: StoredStateV7, tabId: number): string | null {
   const space = state.spaces.find((candidate) =>
     tabBelongsToSpace(state, tabId, candidate),
   );
@@ -675,10 +683,10 @@ function spaceIdForTab(state: StoredStateV6, tabId: number): string | null {
 }
 
 function rememberActiveTabIfInSpace(
-  state: StoredStateV6,
+  state: StoredStateV7,
   tab: chrome.tabs.Tab | undefined,
   space: Space,
-): StoredStateV6 {
+): StoredStateV7 {
   if (
     typeof tab?.id !== 'number' ||
     typeof tab.windowId !== 'number' ||
@@ -733,10 +741,10 @@ async function handleCreateTab(
 }
 
 function withTabSpaceAssignment(
-  state: StoredStateV6,
+  state: StoredStateV7,
   tabId: number | null | undefined,
   spaceId: string,
-): StoredStateV6 {
+): StoredStateV7 {
   return typeof tabId === 'number'
     ? assignTabToSpace(state, tabId, spaceId)
     : state;
@@ -958,7 +966,7 @@ async function cleanupPlaceholders(): Promise<void> {
 
 function buildFocusTabs(
   tabs: chrome.tabs.Tab[],
-  state: StoredStateV6,
+  state: StoredStateV7,
   activeSpace: Space,
 ): CloseFocusTab[] {
   const homePinTabIds = new Set(
@@ -1098,47 +1106,306 @@ async function handlePreserveCloseFocus(
   return getPanelState(windowId);
 }
 
-async function handleCreateGroupFromTab(
-  tabIds: number[],
-  title = DEFAULT_GROUP_TITLE,
-  color: TabGroupColor = DEFAULT_GROUP_COLOR,
-  windowId?: number | null,
+async function handleCreateGroup(
+  payload: Extract<RequestMessage, { action: 'CREATE_GROUP' }>['payload'],
 ): Promise<PanelState> {
-  if (tabIds.length === 0) return getPanelState(windowId);
-  const groupId = await chrome.tabs.group({
-    tabIds: tabIds as [number, ...number[]],
-  });
-  await chrome.tabGroups.update(groupId, { title, color });
-  return getPanelState(windowId);
-}
-
-async function handleMoveTabToGroup(
-  tabId: number,
-  groupId: number,
-  windowId?: number | null,
-): Promise<PanelState> {
-  if (groupId === UNGROUPED_GROUP_ID) {
-    await chrome.tabs.ungroup(tabId);
-  } else {
-    await chrome.tabs.group({ tabIds: tabId, groupId });
+  const { tabIds, homePinIds } = payload;
+  if (tabIds.length === 0 && homePinIds.length === 0) {
+    return getPanelState(payload.windowId);
   }
 
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const space = getActiveSpace(state, payload.windowId);
+  // A selection that includes home pins (or mixes pins and tabs) becomes a
+  // pinned group so every member persists; only-live-tab selections stay loose.
+  const pinned = homePinIds.length > 0;
+
+  const created = createGroup(
+    state,
+    { title: payload.title, pinned },
+    space.id,
+  );
+  state = created.state;
+  const groupId = created.groupId;
+  if (!groupId) return getPanelState(payload.windowId);
+
+  if (pinned) {
+    for (const homePinId of homePinIds) {
+      state = setHomePinGroup(state, homePinId, groupId, space.id);
+    }
+    state = await pinTabsIntoGroup(state, tabIds, groupId, space.id);
+  } else {
+    for (const tabId of tabIds) {
+      state = setTabGroup(state, tabId, groupId);
+    }
+  }
+
+  return saveAndBroadcast(state, payload.windowId);
+}
+
+// Convert live tabs into home pins belonging to a (pinned) group, appending
+// them after the space's existing pins.
+async function pinTabsIntoGroup(
+  state: StoredStateV7,
+  tabIds: number[],
+  groupId: string,
+  spaceId: string,
+): Promise<StoredStateV7> {
+  let nextState = state;
+  const targetSpace = state.spaces.find((space) => space.id === spaceId);
+  let nextOrder =
+    (targetSpace?.homePins ?? []).reduce(
+      (max, pin) => Math.max(max, pin.order),
+      -1,
+    ) + 1;
+
+  for (const tabId of tabIds) {
+    if (findHomePinByTabId(nextState, tabId, spaceId)) continue;
+
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      continue; // Tab closed between selection and action.
+    }
+
+    nextState = removeTabFromGroup(
+      withTabSpaceAssignment(
+        removeTabAlias(
+          addHomePin(
+            nextState,
+            createHomePinFromTab(tab, nextOrder, groupId),
+            spaceId,
+          ),
+          tabId,
+        ),
+        tabId,
+        spaceId,
+      ),
+      tabId,
+    );
+    nextOrder += 1;
+  }
+
+  return nextState;
+}
+
+/** Active-space unpinned live tabs (with strip index + membership) for moves. */
+function collectUnpinnedTabs(
+  panel: PanelState,
+): { tabId: number; index: number; groupId: string | null }[] {
+  return [
+    ...panel.unpinnedGroups.flatMap((group) => group.tabs),
+    ...panel.ungroupedTabs,
+  ]
+    .filter((tab): tab is PanelTab & { tabId: number } => tab.tabId !== null)
+    .map((tab) => ({ tabId: tab.tabId, index: tab.index, groupId: tab.groupId }));
+}
+
+async function handleReorderSection(
+  payload: Extract<RequestMessage, { action: 'REORDER_SECTION' }>['payload'],
+): Promise<PanelState> {
+  const { dragged, target, position, windowId } = payload;
+  const state = await loadState();
+  const activeSpaceId = getActiveSpace(state, windowId).id;
+
+  // Resolve which section the drag belongs to from the dragged unit.
+  const draggedPinned =
+    dragged.kind === 'pin'
+      ? true
+      : dragged.kind === 'tab'
+        ? false
+        : (findGroupById(state, dragged.groupId)?.pinned ?? null);
+  if (draggedPinned === null) return getPanelState(windowId);
+
+  if (draggedPinned) {
+    // Reordering one folder member relative to another in the same folder is a
+    // pin-order move, not a section-unit move (both are inside one unit).
+    if (dragged.kind === 'pin' && target.kind === 'pin') {
+      const draggedPin = findHomePinById(state, dragged.homePinId);
+      const targetPin = findHomePinById(state, target.homePinId);
+      if (
+        draggedPin?.groupId &&
+        draggedPin.groupId === targetPin?.groupId
+      ) {
+        return saveAndBroadcast(
+          moveHomePinRelativeTo(
+            state,
+            dragged.homePinId,
+            target.homePinId,
+            position,
+            activeSpaceId,
+          ),
+          windowId,
+        );
+      }
+    }
+    return saveAndBroadcast(
+      reorderPinnedSection(state, dragged, target, position, activeSpaceId),
+      windowId,
+    );
+  }
+
+  // Unpinned: realize the new order in the real browser strip.
+  const panel = await getPanelState(windowId);
+  const plan = planUnpinnedReorder(
+    collectUnpinnedTabs(panel),
+    dragged,
+    target,
+    position,
+  );
+  if (plan) await chrome.tabs.move(plan.tabIds, { index: plan.index });
   return getPanelState(windowId);
 }
 
+async function handleMoveToGroup(
+  payload: Extract<RequestMessage, { action: 'MOVE_TO_GROUP' }>['payload'],
+): Promise<PanelState> {
+  const state = await loadState();
+  const space = getActiveSpace(state, payload.windowId);
+  const group = findGroupById(state, payload.groupId);
+  if (!group) return getPanelState(payload.windowId);
+
+  if (group.pinned && payload.homePinId) {
+    return saveAndBroadcast(
+      addHomePinToGroup(state, payload.homePinId, payload.groupId, space.id),
+      payload.windowId,
+    );
+  }
+
+  if (!group.pinned && typeof payload.tabId === 'number') {
+    // Place the joining tab just after the folder's current members so the
+    // folder keeps its position instead of jumping to the tab's old slot.
+    const panel = await getPanelState(payload.windowId);
+    const plan = planUnpinnedReorder(
+      collectUnpinnedTabs(panel),
+      { kind: 'tab', tabId: payload.tabId },
+      { kind: 'folder', groupId: payload.groupId },
+      'after',
+    );
+    if (plan) await chrome.tabs.move(plan.tabIds, { index: plan.index });
+    return saveAndBroadcast(
+      setTabGroup(state, payload.tabId, payload.groupId),
+      payload.windowId,
+    );
+  }
+
+  return getPanelState(payload.windowId);
+}
+
+async function handleRemoveFromGroup(
+  payload: Extract<RequestMessage, { action: 'REMOVE_FROM_GROUP' }>['payload'],
+): Promise<PanelState> {
+  let state = await loadState();
+  const space = getActiveSpace(state, payload.windowId);
+
+  if (payload.homePinId) {
+    state = setHomePinGroup(state, payload.homePinId, null, space.id);
+  }
+  if (typeof payload.tabId === 'number') {
+    state = removeTabFromGroup(state, payload.tabId);
+  }
+
+  return saveAndBroadcast(state, payload.windowId);
+}
+
+// Pin an unpinned group: its live tabs become home pins (kept open), and the
+// group moves to the pinned section keeping its title and color.
+async function handlePinGroup(
+  groupId: string,
+  windowId?: number | null,
+): Promise<PanelState> {
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const entry = findGroupById(state, groupId);
+  if (!entry || entry.pinned) return getPanelState(windowId);
+
+  const space = getActiveSpace(state, windowId);
+  const memberTabIds = Object.entries(state.tabGroupMembership ?? {})
+    .filter(([, gid]) => gid === groupId)
+    .map(([tabId]) => Number(tabId));
+
+  state = setGroupPinned(state, groupId, true);
+  state = await pinTabsIntoGroup(state, memberTabIds, groupId, space.id);
+
+  return saveAndBroadcast(state, windowId);
+}
+
+// Unpin a pinned group: it becomes an unpinned group of its currently-open
+// tabs; closed member pins are dropped.
+async function handleUnpinGroup(
+  groupId: string,
+  windowId?: number | null,
+): Promise<PanelState> {
+  const state = await loadState();
+  return saveAndBroadcast(unpinGroup(state, groupId), windowId);
+}
+
+// Reopen every closed home pin in a pinned group.
+async function handleOpenAllInGroup(
+  groupId: string,
+  windowId?: number | null,
+): Promise<PanelState> {
+  let state = await loadState();
+  const space = getActiveSpace(state, windowId);
+  const group = findGroupById(state, groupId);
+  if (!group?.pinned) return getPanelState(windowId);
+
+  const closedPins = space.homePins.filter(
+    (pin) => pin.groupId === groupId && pin.tabId === null,
+  );
+
+  for (const pin of closedPins) {
+    const createProperties =
+      typeof windowId === 'number'
+        ? { active: false, url: pin.homeUrl, windowId }
+        : { active: false, url: pin.homeUrl };
+
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.create(createProperties);
+    } catch {
+      continue;
+    }
+
+    state = withTabSpaceAssignment(
+      updateHomePin(
+        state,
+        pin.id,
+        {
+          tabId: tab.id ?? null,
+          lastKnownUrl: tab.url ?? tab.pendingUrl ?? pin.homeUrl,
+          lastKnownTitle: tab.title ?? pin.lastKnownTitle,
+          faviconUrl: tab.favIconUrl ?? pin.faviconUrl,
+        },
+        space.id,
+      ),
+      tab.id,
+      space.id,
+    );
+  }
+
+  return saveAndBroadcast(state, windowId);
+}
+
+// Close every open tab in a group. For an unpinned group this dissolves it
+// (reconcile prunes the now-empty group); a pinned group keeps its pins.
 async function handleCloseGroup(
-  groupId: number,
+  groupId: string,
   windowId?: number | null,
 ): Promise<PanelState> {
   const resolvedWindowId = await resolveWindowId(windowId);
-  const query =
-    resolvedWindowId === null
-      ? { groupId }
-      : { groupId, windowId: resolvedWindowId };
-  const tabs = await chrome.tabs.query(query);
-  const tabIds = tabs
-    .map((tab) => tab.id)
-    .filter((tabId): tabId is number => typeof tabId === 'number');
+  const state = await loadReconciledState(await chrome.tabs.query({}));
+  const entry = findGroupById(state, groupId);
+  if (!entry) return getPanelState(windowId);
+
+  const space = getActiveSpace(state, resolvedWindowId);
+  const tabIds = entry.pinned
+    ? space.homePins
+        .filter((pin) => pin.groupId === groupId && pin.tabId !== null)
+        .map((pin) => pin.tabId as number)
+    : Object.entries(state.tabGroupMembership ?? {})
+        .filter(([, gid]) => gid === groupId)
+        .map(([tabId]) => Number(tabId));
 
   if (tabIds.length > 0) {
     await preserveSpaceFocusBeforeClosing(new Set(tabIds), resolvedWindowId);
@@ -1146,6 +1413,29 @@ async function handleCloseGroup(
   }
 
   return getPanelState(windowId);
+}
+
+// Delete a pinned group along with its home pins (open tabs stay open as loose
+// tabs); an unpinned group is simply dissolved, leaving its tabs loose.
+async function handleDeleteGroup(
+  groupId: string,
+  windowId?: number | null,
+): Promise<PanelState> {
+  let state = await loadState();
+  const entry = findGroupById(state, groupId);
+  if (!entry) return getPanelState(windowId);
+
+  if (entry.pinned) {
+    const space = getActiveSpace(state, windowId);
+    const memberPinIds = space.homePins
+      .filter((pin) => pin.groupId === groupId)
+      .map((pin) => pin.id);
+    for (const homePinId of memberPinIds) {
+      state = removeHomePin(state, homePinId, space.id);
+    }
+  }
+
+  return saveAndBroadcast(removeGroup(state, groupId), windowId);
 }
 
 async function handleMoveTabToSpace(
@@ -1343,12 +1633,6 @@ async function handleOpenExternalLinkFromHomePin(
   });
 
   if (typeof createdTab.id === 'number') {
-    try {
-      await chrome.tabs.ungroup(createdTab.id);
-    } catch {
-      // The new tab may already be ungrouped.
-    }
-
     await saveState(assignTabToSpace(state, createdTab.id, activeSpaceId));
   }
 
@@ -1383,11 +1667,8 @@ async function handleMessage(
         muted: message.payload.muted,
       });
       return getPanelState(message.payload.windowId);
-    case 'MOVE_TAB':
-      await chrome.tabs.move(message.payload.tabId, {
-        index: message.payload.index,
-      });
-      return getPanelState(message.payload.windowId);
+    case 'REORDER_SECTION':
+      return handleReorderSection(message.payload);
     case 'CREATE_HOME_PIN':
       return handleCreateHomePin(
         message.payload.tabId,
@@ -1424,21 +1705,6 @@ async function handleMessage(
         message.payload.homePinId,
         message.payload.windowId,
       );
-    case 'MOVE_HOME_PIN':
-      {
-        const state = await loadState();
-        const activeSpaceId = getActiveSpace(state, message.payload.windowId).id;
-
-        return saveAndBroadcast(
-          moveHomePin(
-            state,
-            message.payload.homePinId,
-            message.payload.index,
-            activeSpaceId,
-          ),
-          message.payload.windowId,
-        );
-      }
     case 'MOVE_TAB_TO_SPACE':
       return handleMoveTabToSpace(message.payload);
     case 'EXPORT_SPACE_DATA':
@@ -1485,31 +1751,39 @@ async function handleMessage(
         deleteSpace(await loadState(), message.payload.spaceId),
         message.payload.windowId,
       );
-    case 'CREATE_GROUP_FROM_TAB':
-      return handleCreateGroupFromTab(
-        message.payload.tabIds,
-        message.payload.title,
-        message.payload.color,
+    case 'CREATE_GROUP':
+      return handleCreateGroup(message.payload);
+    case 'UPDATE_GROUP':
+      return saveAndBroadcast(
+        updateGroup(await loadState(), message.payload.groupId, {
+          title: message.payload.title,
+          collapsed: message.payload.collapsed,
+        }),
         message.payload.windowId,
       );
-    case 'MOVE_TAB_TO_GROUP':
-      return handleMoveTabToGroup(
-        message.payload.tabId,
+    case 'MOVE_TO_GROUP':
+      return handleMoveToGroup(message.payload);
+    case 'REMOVE_FROM_GROUP':
+      return handleRemoveFromGroup(message.payload);
+    case 'PIN_GROUP':
+      return handlePinGroup(message.payload.groupId, message.payload.windowId);
+    case 'UNPIN_GROUP':
+      return handleUnpinGroup(
         message.payload.groupId,
         message.payload.windowId,
       );
-    case 'UNGROUP_TAB':
-      await chrome.tabs.ungroup(message.payload.tabId);
-      return getPanelState(message.payload.windowId);
-    case 'UPDATE_GROUP':
-      await chrome.tabGroups.update(message.payload.groupId, {
-        title: message.payload.title,
-        color: message.payload.color,
-        collapsed: message.payload.collapsed,
-      });
-      return getPanelState(message.payload.windowId);
+    case 'OPEN_ALL_IN_GROUP':
+      return handleOpenAllInGroup(
+        message.payload.groupId,
+        message.payload.windowId,
+      );
     case 'CLOSE_GROUP':
       return handleCloseGroup(
+        message.payload.groupId,
+        message.payload.windowId,
+      );
+    case 'DELETE_GROUP':
+      return handleDeleteGroup(
         message.payload.groupId,
         message.payload.windowId,
       );
@@ -1844,7 +2118,7 @@ async function getReattachDeadline(): Promise<number | null> {
 }
 
 function hasLostHomePins(
-  state: StoredStateV6,
+  state: StoredStateV7,
   liveTabIds: Set<number>,
 ): boolean {
   return state.spaces.some((space) =>
@@ -1961,11 +2235,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   broadcastSoon();
   void runStartupReattach();
 });
-
-chrome.tabGroups.onCreated.addListener(broadcastSoon);
-chrome.tabGroups.onMoved.addListener(broadcastSoon);
-chrome.tabGroups.onRemoved.addListener(broadcastSoon);
-chrome.tabGroups.onUpdated.addListener(broadcastSoon);
 
 chrome.commands.onCommand.addListener((command, tab) => {
   if (command === COPY_CURRENT_URL_COMMAND) {

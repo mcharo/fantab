@@ -9,10 +9,11 @@ import {
 import { normalizeSpaceIcon } from './spaceIcons';
 import { normalizeState } from './storage';
 import {
+  type FantabGroup,
   type HomePin,
   type Space,
   type SpaceIcon,
-  type StoredStateV6,
+  type StoredStateV7,
 } from './types';
 
 /**
@@ -110,7 +111,7 @@ function chunkKey(index: number): string {
  * output (and therefore identical {@link hashPayload}).
  */
 export function projectSyncable(
-  state: StoredStateV6,
+  state: StoredStateV7,
   preferences: Preferences,
 ): SyncPayload {
   const spaces = [...state.spaces]
@@ -274,15 +275,20 @@ export async function readSync(): Promise<{
  * callers should follow with `reconcileStateForTabs` to re-bind live tabs.
  */
 export function mergeSyncIntoState(
-  localState: StoredStateV6,
+  localState: StoredStateV7,
   payload: SyncPayload,
-): StoredStateV6 {
+): StoredStateV7 {
   const localPinById = new Map<string, HomePin>();
   for (const space of localState.spaces) {
     for (const pin of space.homePins) {
       localPinById.set(pin.id, pin);
     }
   }
+  // Tab groups are machine-local logical state (not synced); preserve each
+  // space's existing groups across a merge so a pull doesn't drop them.
+  const localGroupsBySpaceId = new Map<string, FantabGroup[]>(
+    localState.spaces.map((space) => [space.id, space.groups ?? []] as const),
+  );
 
   const spaces: Space[] = [...payload.spaces]
     .filter((space) => isNonEmptyString(space?.id) && isNonEmptyString(space?.name))
@@ -291,6 +297,7 @@ export function mergeSyncIntoState(
       id: syncSpace.id,
       name: syncSpace.name,
       icon: normalizeSpaceIcon(syncSpace.icon),
+      groups: localGroupsBySpaceId.get(syncSpace.id) ?? [],
       createdAt: numberOr(syncSpace.createdAt, Date.now()),
       order: spaceIndex,
       homePins: (Array.isArray(syncSpace.homePins) ? syncSpace.homePins : [])
@@ -308,6 +315,7 @@ export function mergeSyncIntoState(
             lastKnownTitle: syncPin.lastKnownTitle ?? null,
             createdAt: numberOr(syncPin.createdAt, Date.now()),
             order: pinIndex,
+            groupId: local?.groupId ?? null,
           };
         }),
     }));

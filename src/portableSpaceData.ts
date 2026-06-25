@@ -4,7 +4,7 @@ import {
   STORAGE_VERSION,
   type HomePin,
   type Space,
-  type StoredStateV6,
+  type StoredStateV7,
 } from './types';
 
 export const PORTABLE_SPACE_DATA_APP = 'fantab';
@@ -49,12 +49,12 @@ export interface ImportedRegularTab {
 }
 
 export interface ImportedSpaceData {
-  state: StoredStateV6;
+  state: StoredStateV7;
   regularTabs: ImportedRegularTab[];
 }
 
 interface BuildPortableSpaceDataInput {
-  state: StoredStateV6;
+  state: StoredStateV7;
   tabs: chrome.tabs.Tab[];
   blankUrl?: string;
   exportedAt?: Date;
@@ -238,6 +238,7 @@ export function parsePortableSpaceData(
           ? iconForSpaceIndex(spaceIndex)
           : normalizeSpaceIcon(portableSpace.icon),
       homePins,
+      groups: [],
       createdAt: now,
       order: spaceIndex,
     };
@@ -253,6 +254,7 @@ export function parsePortableSpaceData(
       spaces,
       tabAliases: {},
       tabSpaces: {},
+      tabGroupMembership: {},
     },
     regularTabs,
   };

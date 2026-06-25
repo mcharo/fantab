@@ -19,11 +19,13 @@
   } from '../preferences';
   import {
     DEFAULT_SPACE_ID,
+    type PanelGroup,
     type PanelState,
     type PanelTab,
+    type SectionUnitRef,
     type SpaceIcon,
-    type TabGroupColor,
   } from '../types';
+  import { mergeSection, type SectionEntry } from './sectionOrder';
   import { confirmDialog, promptDialog } from './dialog';
   import ContextMenu, {
     type ContextMenuItem,
@@ -42,7 +44,8 @@
     activeSpaceId: DEFAULT_SPACE_ID,
     spaces: [{ id: DEFAULT_SPACE_ID, name: 'Default', icon: 'circle', order: 0 }],
     homePins: [],
-    groups: [],
+    pinnedGroups: [],
+    unpinnedGroups: [],
     ungroupedTabs: [],
     activeMedia: null,
   };
@@ -61,7 +64,11 @@
   // (e.g. a new tab opened via Cmd+T) without resetting arrow-key navigation.
   let lastActiveTabId: number | null = null;
   let errorMessage = $state<string | null>(null);
-  let contextMenu = $state<{ tab: PanelTab; x: number; y: number } | null>(null);
+  let contextMenu = $state<
+    | { kind: 'tab'; tab: PanelTab; x: number; y: number }
+    | { kind: 'folder'; group: PanelGroup; x: number; y: number }
+    | null
+  >(null);
   let settingsOpen = $state(false);
   let settingsBusy = $state(false);
   let settingsStatus = $state<string | null>(null);
@@ -95,20 +102,29 @@
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
   );
 
-  const filteredGroups = $derived(
-    panelState.groups
-      .map((group) => {
-        const groupMatches = group.title
-          .toLowerCase()
-          .includes(searchQuery.trim().toLowerCase());
-        const tabs = groupMatches
-          ? group.tabs
-          : group.tabs.filter((tab) =>
-              tabMatchesQuery(tab, searchQuery, group.title),
-            );
+  // A group's title matching the query reveals all its tabs; otherwise only
+  // matching tabs show. Empty groups are dropped from the filtered view.
+  function filterGroupForSearch(group: PanelGroup): PanelGroup {
+    const groupMatches = group.title
+      .toLowerCase()
+      .includes(searchQuery.trim().toLowerCase());
+    const tabs = groupMatches
+      ? group.tabs
+      : group.tabs.filter((tab) =>
+          tabMatchesQuery(tab, searchQuery, group.title),
+        );
+    return { ...group, tabs };
+  }
 
-        return { ...group, tabs };
-      })
+  const filteredPinnedGroups = $derived(
+    panelState.pinnedGroups
+      .map(filterGroupForSearch)
+      .filter((group) => group.tabs.length > 0),
+  );
+
+  const filteredUnpinnedGroups = $derived(
+    panelState.unpinnedGroups
+      .map(filterGroupForSearch)
       .filter((group) => group.tabs.length > 0),
   );
 
@@ -120,6 +136,19 @@
     ),
   );
 
+  // Folders and loose rows interleave within a section by their shared order.
+  const pinnedEntries = $derived(
+    mergeSection(filteredHomePins, filteredPinnedGroups),
+  );
+  const unpinnedEntries = $derived(
+    mergeSection(filteredUngroupedTabs, filteredUnpinnedGroups),
+  );
+
+  function entryTabs(entry: SectionEntry): PanelTab[] {
+    if (entry.kind === 'row') return [entry.tab];
+    return entry.group.collapsed ? [] : entry.group.tabs;
+  }
+
   // Open loose tabs currently shown below the separator — what "Close all" acts
   // on (and the count it advertises).
   const closeAllTabIds = $derived(
@@ -128,12 +157,11 @@
       .filter((tabId): tabId is number => tabId !== null),
   );
 
+  // DOM order for keyboard navigation and range selection: the interleaved
+  // pinned section (folders + loose pins), then the interleaved unpinned section.
   const visibleTabs = $derived([
-    ...filteredHomePins,
-    ...filteredGroups.flatMap((group) =>
-      group.collapsed ? [] : group.tabs,
-    ),
-    ...filteredUngroupedTabs,
+    ...pinnedEntries.flatMap(entryTabs),
+    ...unpinnedEntries.flatMap(entryTabs),
   ]);
 
   const isSearching = $derived(searchOpen || searchQuery.trim().length > 0);
@@ -473,21 +501,27 @@
     });
   }
 
-  async function createGroupFromTabs(tabIds: number[]) {
-    if (tabIds.length === 0) return;
+  // A selection containing any home pins becomes a pinned group; an all-live-tab
+  // selection becomes an ephemeral unpinned group.
+  async function createGroup(tabIds: number[], homePinIds: string[]) {
+    if (tabIds.length === 0 && homePinIds.length === 0) return;
 
     const result = await promptDialog({
-      title: 'New group',
-      label: 'Group name',
-      value: 'New Group',
+      title: 'New folder',
+      label: 'Folder name',
+      value: 'New Folder',
       confirmLabel: 'Create',
     });
     if (result === null) return;
 
     clearSelection();
     await sendMessage({
-      action: 'CREATE_GROUP_FROM_TAB',
-      payload: { tabIds, title: result.trim() || 'New Group', color: 'blue' },
+      action: 'CREATE_GROUP',
+      payload: {
+        tabIds,
+        homePinIds,
+        title: result.trim() || 'New Folder',
+      },
     });
   }
 
@@ -577,11 +611,39 @@
     if (!selectedKeys.has(tab.key)) {
       selectSingle(tab.key);
     }
-    contextMenu = { tab, x, y };
+    contextMenu = { kind: 'tab', tab, x, y };
+  }
+
+  function openGroupContextMenu(group: PanelGroup, x: number, y: number) {
+    contextMenu = { kind: 'folder', group, x, y };
   }
 
   function closeContextMenu() {
     contextMenu = null;
+  }
+
+  async function renameFolder(group: PanelGroup) {
+    const result = await promptDialog({
+      title: 'Rename folder',
+      label: 'Folder name',
+      value: group.title,
+      confirmLabel: 'Save',
+    });
+    if (result === null) return;
+
+    const next = result.trim();
+    if (!next || next === group.title) return;
+    await updateGroup(group.id, { title: next });
+  }
+
+  function folderContextMenuItems(group: PanelGroup): ContextMenuItem[] {
+    return [
+      {
+        type: 'action',
+        label: 'Rename folder…',
+        onSelect: () => void renameFolder(group),
+      },
+    ];
   }
 
   // Deferred "Close all": hide the loose tabs now, start the restore window, and
@@ -849,7 +911,11 @@
     const tabs = selectedTabs();
     const pinnable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
     const pinned = tabs.filter((tab) => tab.isHomePin && tab.homePinId);
-    const groupable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
+    const groupableTabs = tabs.filter(
+      (tab) => !tab.isHomePin && tab.tabId !== null,
+    );
+    const groupablePins = tabs.filter((tab) => tab.isHomePin && tab.homePinId);
+    const groupableCount = groupableTabs.length + groupablePins.length;
     const closable = tabs.filter((tab) => tab.isOpen && tab.tabId !== null);
     const items: ContextMenuItem[] = [];
 
@@ -869,12 +935,15 @@
       });
     }
 
-    if (groupable.length > 0) {
+    if (groupableCount > 0) {
       items.push({
         type: 'action',
-        label: `New group from ${tabCount(groupable.length)}`,
+        label: `New folder from ${tabCount(groupableCount)}`,
         onSelect: () =>
-          void createGroupFromTabs(groupable.map((tab) => tab.tabId!)),
+          void createGroup(
+            groupableTabs.map((tab) => tab.tabId!),
+            groupablePins.map((tab) => tab.homePinId!),
+          ),
       });
     }
 
@@ -954,10 +1023,25 @@
             payload: { tabId: tab.tabId! },
           }),
       });
+    }
+
+    if (tab.homePinId || tab.tabId !== null) {
       items.push({
         type: 'action',
-        label: 'New group from tab',
-        onSelect: () => void createGroupFromTabs([tab.tabId!]),
+        label: 'New folder',
+        onSelect: () =>
+          void createGroup(
+            tab.isHomePin || tab.tabId === null ? [] : [tab.tabId],
+            tab.isHomePin && tab.homePinId ? [tab.homePinId] : [],
+          ),
+      });
+    }
+
+    if (tab.groupId) {
+      items.push({
+        type: 'action',
+        label: 'Remove from folder',
+        onSelect: () => void removeFromGroup(memberRefFor(tab)),
       });
     }
 
@@ -1004,9 +1088,22 @@
     return items;
   }
 
+  interface GroupMemberRef {
+    tabId?: number;
+    homePinId?: string;
+  }
+
+  // A home pin is only ever in a pinned group (keyed by pin id); a live tab is
+  // only ever in an unpinned group (keyed by tab id).
+  function memberRefFor(tab: PanelTab): GroupMemberRef {
+    return tab.isHomePin
+      ? { homePinId: tab.homePinId ?? undefined }
+      : { tabId: tab.tabId ?? undefined };
+  }
+
   async function updateGroup(
-    groupId: number,
-    updates: { title?: string; color?: TabGroupColor; collapsed?: boolean },
+    groupId: string,
+    updates: { title?: string; collapsed?: boolean },
   ) {
     await sendMessage({
       action: 'UPDATE_GROUP',
@@ -1014,10 +1111,56 @@
     });
   }
 
-  async function closeGroup(groupId: number) {
+  async function closeGroup(groupId: string) {
     await sendMessage({
       action: 'CLOSE_GROUP',
       payload: { groupId },
+    });
+  }
+
+  async function pinGroup(groupId: string) {
+    await sendMessage({
+      action: 'PIN_GROUP',
+      payload: { groupId },
+    });
+  }
+
+  async function unpinGroup(groupId: string) {
+    await sendMessage({
+      action: 'UNPIN_GROUP',
+      payload: { groupId },
+    });
+  }
+
+  async function openAllInGroup(groupId: string) {
+    await sendMessage({
+      action: 'OPEN_ALL_IN_GROUP',
+      payload: { groupId },
+    });
+  }
+
+  async function moveToGroup(groupId: string, member: GroupMemberRef) {
+    await sendMessage({
+      action: 'MOVE_TO_GROUP',
+      payload: { groupId, ...member },
+    });
+  }
+
+  async function removeFromGroup(member: GroupMemberRef) {
+    await sendMessage({
+      action: 'REMOVE_FROM_GROUP',
+      payload: { ...member },
+    });
+  }
+
+  async function reorderSection(
+    dragged: SectionUnitRef,
+    target: SectionUnitRef,
+    position: 'before' | 'after',
+  ) {
+    await sendMessage({
+      action: 'REORDER_SECTION',
+      payload: { dragged, target, position },
     });
   }
 
@@ -1209,9 +1352,8 @@
   {/if}
 
   <TabList
-    homePins={filteredHomePins}
-    groups={filteredGroups}
-    ungroupedTabs={filteredUngroupedTabs}
+    {pinnedEntries}
+    {unpinnedEntries}
     spaceName={activeSpace?.name ?? ''}
     spaceIcon={activeSpace?.icon ?? 'circle'}
     searching={isSearching}
@@ -1236,22 +1378,15 @@
     onGoHome={(homePinId) =>
       sendMessage({ action: 'GO_HOME', payload: { homePinId } })}
     onContextMenu={openContextMenu}
-    onMoveToGroup={(tabId, groupId) =>
-      sendMessage({
-        action: 'MOVE_TAB_TO_GROUP',
-        payload: { tabId, groupId },
-      })}
-    onUngroup={(tabId) =>
-      sendMessage({ action: 'UNGROUP_TAB', payload: { tabId } })}
-    onCloseGroup={closeGroup}
+    onGroupContextMenu={openGroupContextMenu}
     onUpdateGroup={updateGroup}
-    onMoveTab={(tabId, index) =>
-      sendMessage({ action: 'MOVE_TAB', payload: { tabId, index } })}
-    onMoveHomePin={(homePinId, index) =>
-      sendMessage({
-        action: 'MOVE_HOME_PIN',
-        payload: { homePinId, index },
-      })}
+    onDropMember={moveToGroup}
+    onRemoveFromGroup={removeFromGroup}
+    onCloseGroup={closeGroup}
+    onPinGroup={pinGroup}
+    onUnpinGroup={unpinGroup}
+    onOpenAllInGroup={openAllInGroup}
+    onReorder={reorderSection}
     closeAllCount={closeAllTabIds.length}
     closeAllPending={pendingCloseTabIds.size > 0}
     closeAllPendingCount={pendingCloseTabIds.size}
@@ -1301,7 +1436,9 @@
     <ContextMenu
       x={contextMenu.x}
       y={contextMenu.y}
-      items={contextMenuItems(contextMenu.tab)}
+      items={contextMenu.kind === 'folder'
+        ? folderContextMenuItems(contextMenu.group)
+        : contextMenuItems(contextMenu.tab)}
       onClose={closeContextMenu}
     />
   {/if}

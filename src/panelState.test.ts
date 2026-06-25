@@ -5,7 +5,11 @@ import {
   tabMatchesQuery,
   type CloseFocusTab,
 } from './panelState';
-import { DEFAULT_SPACE_ID, type StoredStateV6 } from './types';
+import {
+  DEFAULT_SPACE_ID,
+  type FantabGroup,
+  type StoredStateV7,
+} from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   return {
@@ -20,22 +24,20 @@ function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   } as chrome.tabs.Tab;
 }
 
-function group(
-  overrides: Partial<chrome.tabGroups.TabGroup>,
-): chrome.tabGroups.TabGroup {
+function fantabGroup(overrides: Partial<FantabGroup>): FantabGroup {
   return {
-    collapsed: false,
-    color: 'blue',
-    id: 10,
-    shared: false,
+    id: 'group-1',
     title: 'Work',
-    windowId: 1,
+    pinned: false,
+    collapsed: false,
+    order: 0,
+    createdAt: 1,
     ...overrides,
-  } as chrome.tabGroups.TabGroup;
+  };
 }
 
-const state: StoredStateV6 = {
-  version: 6,
+const state: StoredStateV7 = {
+  version: 7,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -48,6 +50,7 @@ const state: StoredStateV6 = {
       icon: 'circle',
       createdAt: 1,
       order: 0,
+      groups: [],
       homePins: [
         {
           id: 'pin-1',
@@ -59,6 +62,7 @@ const state: StoredStateV6 = {
           lastKnownTitle: 'Inbox',
           createdAt: 1,
           order: 0,
+          groupId: null,
         },
       ],
     },
@@ -71,6 +75,7 @@ const state: StoredStateV6 = {
     '2': DEFAULT_SPACE_ID,
     '3': DEFAULT_SPACE_ID,
   },
+  tabGroupMembership: {},
 };
 
 describe('buildPanelState', () => {
@@ -85,24 +90,20 @@ describe('buildPanelState', () => {
           index: 0,
           title: 'Google Docs',
           url: 'https://docs.example.com/',
-          groupId: -1,
         }),
         tab({
           id: 2,
           index: 1,
           title: 'Issue tracker',
           url: 'https://issues.example.com/',
-          groupId: 10,
         }),
         tab({
           id: 3,
           index: 2,
           title: 'Inbox',
           url: 'https://mail.example.com/',
-          groupId: -1,
         }),
       ],
-      groups: [group({ id: 10, title: 'Work' })],
     });
 
     expect(panelState.activeTabId).toBe(1);
@@ -113,11 +114,127 @@ describe('buildPanelState', () => {
     expect(panelState.homePins).toHaveLength(1);
     expect(panelState.homePins[0].displayName).toBe('Mail');
     expect(panelState.homePins[0].atHome).toBe(true);
-    expect(panelState.ungroupedTabs.map((panelTab) => panelTab.displayName)).toEqual([
-      'Docs',
-    ]);
-    expect(panelState.groups[0].title).toBe('Work');
-    expect(panelState.groups[0].tabs[0].displayName).toBe('Issue tracker');
+    expect(
+      panelState.ungroupedTabs.map((panelTab) => panelTab.displayName),
+    ).toEqual(['Docs', 'Issue tracker']);
+    expect(panelState.pinnedGroups).toHaveLength(0);
+    expect(panelState.unpinnedGroups).toHaveLength(0);
+  });
+
+  it('partitions live tabs into an unpinned group via tabGroupMembership', () => {
+    const panelState = buildPanelState({
+      windowId: 1,
+      state: {
+        ...state,
+        spaces: [
+          { ...state.spaces[0], groups: [fantabGroup({ id: 'work' })] },
+        ],
+        tabGroupMembership: { '2': 'work' },
+      },
+      tabs: [
+        tab({ id: 1, index: 0, title: 'Docs', url: 'https://docs.example.com/' }),
+        tab({
+          id: 2,
+          index: 1,
+          title: 'Issue tracker',
+          url: 'https://issues.example.com/',
+        }),
+      ],
+    });
+
+    expect(panelState.unpinnedGroups).toHaveLength(1);
+    expect(panelState.unpinnedGroups[0].title).toBe('Work');
+    expect(panelState.unpinnedGroups[0].pinned).toBe(false);
+    expect(
+      panelState.unpinnedGroups[0].tabs.map((panelTab) => panelTab.displayName),
+    ).toEqual(['Issue tracker']);
+    expect(
+      panelState.ungroupedTabs.map((panelTab) => panelTab.displayName),
+    ).toEqual(['Docs']);
+  });
+
+  it('drops an unpinned group whose last live tab has closed', () => {
+    const panelState = buildPanelState({
+      windowId: 1,
+      state: {
+        ...state,
+        spaces: [
+          { ...state.spaces[0], groups: [fantabGroup({ id: 'work' })] },
+        ],
+        // Membership references a tab that is no longer open.
+        tabGroupMembership: { '99': 'work' },
+      },
+      tabs: [
+        tab({ id: 1, index: 0, title: 'Docs', url: 'https://docs.example.com/' }),
+      ],
+    });
+
+    expect(panelState.unpinnedGroups).toHaveLength(0);
+    expect(
+      panelState.ungroupedTabs.map((panelTab) => panelTab.displayName),
+    ).toEqual(['Docs']);
+  });
+
+  it('groups home pins into a pinned group and keeps it out of loose pins', () => {
+    const panelState = buildPanelState({
+      windowId: 1,
+      state: {
+        ...state,
+        spaces: [
+          {
+            ...state.spaces[0],
+            groups: [fantabGroup({ id: 'reading', pinned: true, title: 'Reading' })],
+            homePins: [
+              { ...state.spaces[0].homePins[0], groupId: 'reading' },
+            ],
+          },
+        ],
+      },
+      tabs: [
+        tab({
+          id: 3,
+          index: 0,
+          title: 'Inbox',
+          url: 'https://mail.example.com/',
+        }),
+      ],
+    });
+
+    expect(panelState.pinnedGroups).toHaveLength(1);
+    expect(panelState.pinnedGroups[0].title).toBe('Reading');
+    expect(panelState.pinnedGroups[0].pinned).toBe(true);
+    expect(
+      panelState.pinnedGroups[0].tabs.map((panelTab) => panelTab.displayName),
+    ).toEqual(['Mail']);
+    expect(panelState.homePins).toHaveLength(0);
+  });
+
+  it('keeps a pinned group visible even when all its member pins are closed', () => {
+    const panelState = buildPanelState({
+      windowId: 1,
+      state: {
+        ...state,
+        spaces: [
+          {
+            ...state.spaces[0],
+            groups: [fantabGroup({ id: 'reading', pinned: true, title: 'Reading' })],
+            homePins: [
+              {
+                ...state.spaces[0].homePins[0],
+                tabId: null,
+                groupId: 'reading',
+              },
+            ],
+          },
+        ],
+      },
+      tabs: [],
+    });
+
+    expect(panelState.pinnedGroups).toHaveLength(1);
+    expect(panelState.pinnedGroups[0].tabs).toHaveLength(1);
+    expect(panelState.pinnedGroups[0].tabs[0].isOpen).toBe(false);
+    expect(panelState.homePins).toHaveLength(0);
   });
 
   it('hides the placeholder page and nulls activeTabId when parked on it', () => {
@@ -130,11 +247,9 @@ describe('buildPanelState', () => {
           id: 9,
           active: true,
           url: 'chrome-extension://abc/blank.html',
-          groupId: -1,
         }),
-        tab({ id: 1, url: 'https://docs.example.com/', groupId: -1 }),
+        tab({ id: 1, url: 'https://docs.example.com/' }),
       ],
-      groups: [],
     });
 
     expect(panelState.activeTabId).toBeNull();
@@ -159,7 +274,6 @@ describe('buildPanelState', () => {
         ],
       },
       tabs: [],
-      groups: [],
     });
 
     expect(panelState.homePins).toHaveLength(1);
@@ -184,6 +298,7 @@ describe('buildPanelState', () => {
             icon: 'diamond',
             createdAt: 2,
             order: 1,
+            groups: [],
             homePins: [],
           },
         ],
@@ -194,10 +309,8 @@ describe('buildPanelState', () => {
           index: 0,
           title: 'Inbox',
           url: 'https://mail.example.com/',
-          groupId: -1,
         }),
       ],
-      groups: [],
     });
 
     expect(panelState.activeSpaceId).toBe('focus');
@@ -222,6 +335,7 @@ describe('buildPanelState', () => {
             icon: 'diamond',
             createdAt: 2,
             order: 1,
+            groups: [],
             homePins: [],
           },
         ],
@@ -236,17 +350,14 @@ describe('buildPanelState', () => {
           index: 0,
           title: 'Default docs',
           url: 'https://docs.example.com/',
-          groupId: -1,
         }),
         tab({
           id: 2,
           index: 1,
           title: 'Focus notes',
           url: 'https://notes.example.com/',
-          groupId: -1,
         }),
       ],
-      groups: [],
     });
 
     expect(panelState.activeSpaceId).toBe('focus');
@@ -272,6 +383,7 @@ describe('buildPanelState', () => {
             icon: 'diamond',
             createdAt: 2,
             order: 1,
+            groups: [],
             homePins: [
               {
                 id: 'focus-pin',
@@ -283,6 +395,7 @@ describe('buildPanelState', () => {
                 lastKnownTitle: 'Inbox',
                 createdAt: 2,
                 order: 0,
+                groupId: null,
               },
             ],
           },
@@ -294,10 +407,8 @@ describe('buildPanelState', () => {
           index: 0,
           title: 'Inbox',
           url: 'https://mail.example.com/',
-          groupId: -1,
         }),
       ],
-      groups: [],
     });
 
     expect(panelState.homePins.map((panelTab) => panelTab.displayName)).toEqual([
@@ -306,89 +417,11 @@ describe('buildPanelState', () => {
     expect(panelState.ungroupedTabs).toHaveLength(0);
   });
 
-  it('hides inactive-space pins from native group rows too', () => {
-    const panelState = buildPanelState({
-      windowId: 1,
-      state: {
-        ...state,
-        activeSpaceByWindowId: {
-          ...state.activeSpaceByWindowId,
-          '1': 'focus',
-        },
-        spaces: [
-          state.spaces[0],
-          {
-            id: 'focus',
-            name: 'Focus',
-            icon: 'diamond',
-            createdAt: 2,
-            order: 1,
-            homePins: [],
-          },
-        ],
-      },
-      tabs: [
-        tab({
-          id: 3,
-          index: 0,
-          title: 'Inbox',
-          url: 'https://mail.example.com/',
-          groupId: 10,
-        }),
-      ],
-      groups: [group({ id: 10, title: 'Work' })],
-    });
-
-    expect(panelState.groups).toHaveLength(0);
-    expect(panelState.ungroupedTabs).toHaveLength(0);
-  });
-
-  it('hides regular tabs assigned to inactive spaces from native group rows', () => {
-    const panelState = buildPanelState({
-      windowId: 1,
-      state: {
-        ...state,
-        activeSpaceByWindowId: {
-          ...state.activeSpaceByWindowId,
-          '1': 'focus',
-        },
-        spaces: [
-          state.spaces[0],
-          {
-            id: 'focus',
-            name: 'Focus',
-            icon: 'diamond',
-            createdAt: 2,
-            order: 1,
-            homePins: [],
-          },
-        ],
-        tabSpaces: {
-          '2': DEFAULT_SPACE_ID,
-        },
-      },
-      tabs: [
-        tab({
-          id: 2,
-          index: 0,
-          title: 'Issue tracker',
-          url: 'https://issues.example.com/',
-          groupId: 10,
-        }),
-      ],
-      groups: [group({ id: 10, title: 'Work' })],
-    });
-
-    expect(panelState.groups).toHaveLength(0);
-    expect(panelState.ungroupedTabs).toHaveLength(0);
-  });
-
   it('defaults activeMedia to null and passes a provided value through', () => {
     const withoutMedia = buildPanelState({
       windowId: 1,
       state,
       tabs: [],
-      groups: [],
     });
     expect(withoutMedia.activeMedia).toBeNull();
 
@@ -408,7 +441,6 @@ describe('buildPanelState', () => {
       windowId: 1,
       state,
       tabs: [],
-      groups: [],
       activeMedia,
     });
     expect(withMedia.activeMedia).toEqual(activeMedia);
@@ -432,6 +464,7 @@ describe('buildPanelState', () => {
             icon: 'diamond',
             createdAt: 2,
             order: 1,
+            groups: [],
             homePins: [
               {
                 id: 'pin-2',
@@ -443,13 +476,13 @@ describe('buildPanelState', () => {
                 lastKnownTitle: null,
                 createdAt: 2,
                 order: 0,
+                groupId: null,
               },
             ],
           },
         ],
       },
       tabs: [],
-      groups: [],
     });
 
     expect(panelState.activeSpaceId).toBe('focus');
@@ -469,10 +502,8 @@ describe('tabMatchesQuery', () => {
           id: 1,
           title: 'Google Docs',
           url: 'https://docs.example.com/',
-          groupId: -1,
         }),
       ],
-      groups: [],
     });
 
     const [panelTab] = panelState.ungroupedTabs;

@@ -1,18 +1,12 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import { getFaviconUrl } from '../../lib/url';
-  import type { PanelTab } from '../../types';
+  import type { PanelTab, SectionUnitRef } from '../../types';
+  import { dragState } from '../dragState';
   import Icon from './Icon.svelte';
   import InlineEdit from './InlineEdit.svelte';
 
   type DropPosition = 'before' | 'after';
-  type DragPayload =
-    | { type: 'homePin'; homePinId: string }
-    | {
-        type: 'tab';
-        tabId: number;
-        sourceIndex?: number;
-        sourceWindowId?: number | null;
-      };
 
   interface Props {
     tab: PanelTab;
@@ -28,10 +22,9 @@
     onRemoveHomePin: (homePinId: string) => void;
     onGoHome: (homePinId: string) => void;
     onContextMenu: (tab: PanelTab, x: number, y: number) => void;
-    onTabDrop: (draggedTabId: number, targetIndex: number) => void;
-    onHomePinDrop: (
-      homePinId: string,
-      targetHomePinId: string,
+    onReorder: (
+      dragged: SectionUnitRef,
+      target: SectionUnitRef,
       position: DropPosition,
     ) => void;
   }
@@ -50,9 +43,39 @@
     onRemoveHomePin,
     onGoHome,
     onContextMenu,
-    onTabDrop,
-    onHomePinDrop,
+    onReorder,
   }: Props = $props();
+
+  // This row as a reorder unit: a loose/member home pin, or a live tab.
+  function selfRef(): SectionUnitRef {
+    return tab.isHomePin
+      ? { kind: 'pin', homePinId: tab.homePinId as string }
+      : { kind: 'tab', tabId: tab.tabId as number };
+  }
+
+  // Whether the active drag can reorder relative to this row. Loose rows accept
+  // any same-section unit (a folder, or a loose item); a folder member row only
+  // accepts a sibling from the same folder (intra-folder reordering).
+  function reorderTargetValid(): boolean {
+    const drag = get(dragState);
+    if (!drag || drag.pinned !== tab.isHomePin) return false;
+    const self = selfRef();
+    if (
+      drag.ref.kind === self.kind &&
+      ((self.kind === 'pin' &&
+        drag.ref.kind === 'pin' &&
+        drag.ref.homePinId === self.homePinId) ||
+        (self.kind === 'tab' &&
+          drag.ref.kind === 'tab' &&
+          drag.ref.tabId === self.tabId))
+    ) {
+      return false; // dropping on itself
+    }
+    if (tab.groupId === null) {
+      return drag.ref.kind === 'folder' || drag.sourceGroupId === null;
+    }
+    return drag.ref.kind !== 'folder' && drag.sourceGroupId === tab.groupId;
+  }
 
   const canGoHome = $derived(tab.isHomePin && tab.isOpen && !tab.atHome);
   const canClose = $derived(tab.isOpen && tab.tabId !== null);
@@ -95,16 +118,17 @@
     faviconMode = 'fallback';
   }
 
-  function dragPayload(): string {
-    if (tab.isHomePin && tab.homePinId) {
-      return JSON.stringify({ type: 'homePin', homePinId: tab.homePinId });
-    }
-    return JSON.stringify({
-      type: 'tab',
-      tabId: tab.tabId,
-      sourceIndex: tab.index,
-      sourceWindowId: tab.windowId,
+  function handleDragStart(event: DragEvent) {
+    dragState.set({
+      ref: selfRef(),
+      pinned: tab.isHomePin,
+      sourceGroupId: tab.groupId,
     });
+    if (event.dataTransfer) {
+      // Some data is required for a valid drag; detection uses the store.
+      event.dataTransfer.setData('text/plain', tab.key);
+      event.dataTransfer.effectAllowed = 'move';
+    }
   }
 
   function rowDropPosition(event: DragEvent): DropPosition {
@@ -113,23 +137,12 @@
     return event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
   }
 
-  function targetTabIndex(payload: Extract<DragPayload, { type: 'tab' }>): number {
-    const position = dropPosition ?? 'before';
-    let insertIndex = tab.index + (position === 'after' ? 1 : 0);
-
-    if (
-      payload.sourceWindowId === tab.windowId &&
-      typeof payload.sourceIndex === 'number' &&
-      payload.sourceIndex < insertIndex
-    ) {
-      insertIndex -= 1;
-    }
-
-    return Math.max(0, insertIndex);
-  }
-
   function handleDragOver(event: DragEvent) {
+    // Only same-container reorders highlight here; folder reorders relative to
+    // this row's folder block (and invalid drags) fall through to bubble.
+    if (!reorderTargetValid()) return;
     event.preventDefault();
+    event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
     dropPosition = rowDropPosition(event);
   }
@@ -142,26 +155,13 @@
   }
 
   function handleDrop(event: DragEvent) {
+    if (!reorderTargetValid()) return;
+    const drag = get(dragState);
     event.preventDefault();
     event.stopPropagation();
     const position = dropPosition ?? rowDropPosition(event);
     dropPosition = null;
-
-    const payload = parseDragPayload(event);
-    if (!payload) return;
-
-    if (
-      payload.type === 'homePin' &&
-      tab.isHomePin &&
-      tab.homePinId &&
-      payload.homePinId !== tab.homePinId
-    ) {
-      onHomePinDrop(payload.homePinId, tab.homePinId, position);
-    }
-
-    if (payload.type === 'tab' && tab.tabId !== null && payload.tabId !== tab.tabId) {
-      onTabDrop(payload.tabId, targetTabIndex(payload));
-    }
+    if (drag) onReorder(drag.ref, selfRef(), position);
   }
 
   function handleRowClick(event: MouseEvent) {
@@ -206,32 +206,6 @@
     else onActivate(tab);
   }
 
-  function parseDragPayload(event: DragEvent): DragPayload | null {
-    try {
-      const payload = JSON.parse(event.dataTransfer?.getData('text/plain') ?? '');
-      if (payload.type === 'homePin' && typeof payload.homePinId === 'string') {
-        return payload;
-      }
-      if (payload.type === 'tab' && typeof payload.tabId === 'number') {
-        return {
-          type: 'tab',
-          tabId: payload.tabId,
-          sourceIndex:
-            typeof payload.sourceIndex === 'number'
-              ? payload.sourceIndex
-              : undefined,
-          sourceWindowId:
-            typeof payload.sourceWindowId === 'number'
-              ? payload.sourceWindowId
-              : null,
-        };
-      }
-    } catch {
-      return null;
-    }
-
-    return null;
-  }
 </script>
 
 <div
@@ -243,13 +217,11 @@
   class:dropBefore={dropPosition === 'before'}
   class:dropAfter={dropPosition === 'after'}
   draggable={tab.isOpen || tab.isHomePin}
-  ondragstart={(event) => {
-    if (!event.dataTransfer) return;
-    event.dataTransfer.setData('text/plain', dragPayload());
-    event.dataTransfer.setData('fantab/key', tab.key);
-    event.dataTransfer.effectAllowed = 'move';
+  ondragstart={handleDragStart}
+  ondragend={() => {
+    dragState.set(null);
+    dropPosition = null;
   }}
-  ondragend={() => (dropPosition = null)}
   ondragover={handleDragOver}
   ondragleave={handleDragLeave}
   ondrop={handleDrop}

@@ -4,7 +4,7 @@ import {
   parsePortableSpaceData,
   type PortableSpaceDataV1,
 } from './portableSpaceData';
-import { DEFAULT_SPACE_ID, type StoredStateV6 } from './types';
+import { DEFAULT_SPACE_ID, type StoredStateV7 } from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   return {
@@ -19,8 +19,8 @@ function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   } as chrome.tabs.Tab;
 }
 
-const state: StoredStateV6 = {
-  version: 6,
+const state: StoredStateV7 = {
+  version: 7,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -182,7 +182,7 @@ describe('portable space data', () => {
     });
 
     expect(imported.state).toMatchObject({
-      version: 6,
+      version: 7,
       activeSpaceByWindowId: {
         default: 'space-1',
       },
