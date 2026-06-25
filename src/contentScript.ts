@@ -81,14 +81,43 @@ import type { VideoMirrorSignal } from './videoMirror';
     return valid;
   }
 
-  function normalizeHostname(hostname: string): string {
-    return hostname.toLowerCase().replace(/^www\./, '');
+  // Mirror of getRegistrableDomain in src/lib/url.ts. Kept inline so the content
+  // script stays a self-contained bundle (no shared chunk imports). Update both
+  // copies together.
+  const MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
+    'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'net.uk', 'sch.uk', 'ltd.uk',
+    'plc.uk',
+    'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'id.au',
+    'co.nz', 'net.nz', 'org.nz', 'govt.nz',
+    'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp',
+    'co.kr', 'or.kr',
+    'co.in', 'net.in', 'org.in', 'gen.in', 'firm.in',
+    'co.za', 'org.za',
+    'com.br', 'net.br', 'org.br', 'gov.br',
+    'com.cn', 'net.cn', 'org.cn', 'gov.cn',
+    'com.mx', 'com.sg', 'com.hk', 'com.tw', 'com.tr', 'com.ar', 'com.pl',
+    'co.id', 'co.il', 'co.th',
+  ]);
+
+  function getRegistrableDomain(hostname: string): string {
+    const host = hostname.toLowerCase().replace(/\.$/, '');
+    const labels = host.split('.');
+    if (labels.length <= 2) return host;
+
+    const lastTwo = labels.slice(-2).join('.');
+    if (MULTI_LABEL_PUBLIC_SUFFIXES.has(lastTwo)) {
+      return labels.slice(-3).join('.');
+    }
+    return lastTwo;
   }
 
   function isSupportedWebUrl(url: URL): boolean {
     return url.protocol === 'http:' || url.protocol === 'https:';
   }
 
+  // Compare by registrable (base) domain so cross-subdomain redirects (e.g.
+  // play.hbomax.com -> www.hbomax.com) are treated as the same site and don't
+  // spill into new tabs.
   function isSameSiteAsHomeUrl(targetUrl: string, homeUrl: string): boolean {
     try {
       const target = new URL(targetUrl);
@@ -98,10 +127,10 @@ import type { VideoMirrorSignal } from './videoMirror';
         return false;
       }
 
-      const targetHost = normalizeHostname(target.hostname);
-      const homeHost = normalizeHostname(home.hostname);
+      const targetDomain = getRegistrableDomain(target.hostname);
+      const homeDomain = getRegistrableDomain(home.hostname);
 
-      return targetHost === homeHost || targetHost.endsWith(`.${homeHost}`);
+      return targetDomain !== '' && targetDomain === homeDomain;
     } catch {
       return false;
     }

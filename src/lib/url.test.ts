@@ -80,6 +80,26 @@ describe('isSameSiteAsHomeUrl', () => {
     ).toBe(true);
   });
 
+  it('matches a parent domain when the home pin is on a subdomain', () => {
+    // A home pin on play.hbomax.com that redirects to www.hbomax.com (or the
+    // bare apex) should still be considered the same site.
+    expect(
+      isSameSiteAsHomeUrl('https://www.hbomax.com/', 'https://play.hbomax.com/'),
+    ).toBe(true);
+    expect(
+      isSameSiteAsHomeUrl('https://hbomax.com/', 'https://play.hbomax.com/'),
+    ).toBe(true);
+  });
+
+  it('matches sibling subdomains of the same base domain', () => {
+    expect(
+      isSameSiteAsHomeUrl(
+        'https://auth.hbomax.com/login',
+        'https://play.hbomax.com/',
+      ),
+    ).toBe(true);
+  });
+
   it('returns false for lookalike host suffixes', () => {
     expect(
       isSameSiteAsHomeUrl(
@@ -87,6 +107,15 @@ describe('isSameSiteAsHomeUrl', () => {
         'https://cnbc.com/',
       ),
     ).toBe(false);
+  });
+
+  it('keeps distinct sites under a multi-label public suffix separate', () => {
+    expect(
+      isSameSiteAsHomeUrl('https://gov.co.uk/', 'https://bbc.co.uk/'),
+    ).toBe(false);
+    expect(
+      isSameSiteAsHomeUrl('https://news.bbc.co.uk/', 'https://bbc.co.uk/'),
+    ).toBe(true);
   });
 
   it('returns false for unsupported schemes and invalid URLs', () => {

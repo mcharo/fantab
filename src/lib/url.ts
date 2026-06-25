@@ -9,14 +9,53 @@ export function isAtHome(currentUrl: string | null, homeUrl: string): boolean {
   }
 }
 
-function normalizeHostname(hostname: string): string {
-  return hostname.toLowerCase().replace(/^www\./, '');
-}
+// Common multi-label public suffixes. Not the full Public Suffix List — just
+// enough that, e.g., "bbc.co.uk" and "gov.co.uk" resolve to distinct base
+// domains rather than both collapsing to "co.uk".
+const MULTI_LABEL_PUBLIC_SUFFIXES = new Set([
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'net.uk', 'sch.uk', 'ltd.uk',
+  'plc.uk',
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'id.au',
+  'co.nz', 'net.nz', 'org.nz', 'govt.nz',
+  'co.jp', 'or.jp', 'ne.jp', 'ac.jp', 'go.jp',
+  'co.kr', 'or.kr',
+  'co.in', 'net.in', 'org.in', 'gen.in', 'firm.in',
+  'co.za', 'org.za',
+  'com.br', 'net.br', 'org.br', 'gov.br',
+  'com.cn', 'net.cn', 'org.cn', 'gov.cn',
+  'com.mx', 'com.sg', 'com.hk', 'com.tw', 'com.tr', 'com.ar', 'com.pl',
+  'co.id', 'co.il', 'co.th',
+]);
 
 function isSupportedWebUrl(url: URL): boolean {
   return url.protocol === 'http:' || url.protocol === 'https:';
 }
 
+/**
+ * The registrable ("base") domain of a hostname — the part a user would
+ * recognize as "the site" (e.g. `play.hbomax.com` -> `hbomax.com`,
+ * `news.bbc.co.uk` -> `bbc.co.uk`). Uses a small public-suffix list to handle
+ * common multi-label TLDs; everything else falls back to the last two labels.
+ */
+export function getRegistrableDomain(hostname: string): string {
+  const host = hostname.toLowerCase().replace(/\.$/, '');
+  const labels = host.split('.');
+  if (labels.length <= 2) return host;
+
+  const lastTwo = labels.slice(-2).join('.');
+  if (MULTI_LABEL_PUBLIC_SUFFIXES.has(lastTwo)) {
+    return labels.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
+/**
+ * Whether `targetUrl` belongs to the same site as `homeUrl`, compared by
+ * registrable (base) domain. This deliberately treats sibling/parent
+ * subdomains as the same site (e.g. a home pin on `play.hbomax.com` stays
+ * "home" when the site redirects to `www.hbomax.com`), so cross-subdomain
+ * redirects don't spill into new tabs.
+ */
 export function isSameSiteAsHomeUrl(targetUrl: string, homeUrl: string): boolean {
   try {
     const target = new URL(targetUrl);
@@ -26,10 +65,10 @@ export function isSameSiteAsHomeUrl(targetUrl: string, homeUrl: string): boolean
       return false;
     }
 
-    const targetHost = normalizeHostname(target.hostname);
-    const homeHost = normalizeHostname(home.hostname);
+    const targetDomain = getRegistrableDomain(target.hostname);
+    const homeDomain = getRegistrableDomain(home.hostname);
 
-    return targetHost === homeHost || targetHost.endsWith(`.${homeHost}`);
+    return targetDomain !== '' && targetDomain === homeDomain;
   } catch {
     return false;
   }
