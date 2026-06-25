@@ -637,7 +637,22 @@
   }
 
   function folderContextMenuItems(group: PanelGroup): ContextMenuItem[] {
+    const allOpen = group.tabs.every((tab) => tab.isOpen);
+    const noneOpen = group.tabs.every((tab) => !tab.isOpen);
     return [
+      {
+        type: 'action',
+        label: 'Open All',
+        disabled: allOpen,
+        onSelect: () => void openAllInGroup(group.id),
+      },
+      {
+        type: 'action',
+        label: 'Close All',
+        disabled: noneOpen,
+        onSelect: () => void closeAllInGroup(group),
+      },
+      { type: 'separator' },
       {
         type: 'action',
         label: 'Rename folder…',
@@ -1140,6 +1155,25 @@
       action: 'OPEN_ALL_IN_GROUP',
       payload: { groupId },
     });
+  }
+
+  // Close every open tab in a folder. Closing an unpinned folder's tabs
+  // dissolves the folder, so confirm first; a pinned folder keeps its pins.
+  async function closeAllInGroup(group: PanelGroup) {
+    const openCount = group.tabs.filter((tab) => tab.isOpen).length;
+    if (openCount === 0) return;
+
+    if (!group.pinned) {
+      const confirmed = await confirmDialog({
+        title: 'Close all',
+        message: `Close all ${openCount} tab${openCount === 1 ? '' : 's'} in "${group.title}"?`,
+        confirmLabel: 'Close',
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
+
+    await closeGroup(group.id);
   }
 
   async function moveToGroup(groupId: string, member: GroupMemberRef) {
