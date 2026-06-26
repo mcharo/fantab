@@ -28,9 +28,11 @@
   import { mergeSection, type SectionEntry } from './sectionOrder';
   import { visibleGroupTabs } from '../lib/folderView';
   import { confirmDialog, promptDialog } from './dialog';
+  import type { DragMember } from './dragState';
   import ContextMenu, {
     type ContextMenuItem,
   } from './components/ContextMenu.svelte';
+  import DragPreview from './components/DragPreview.svelte';
   import DialogHost from './components/DialogHost.svelte';
   import DownloadsFan from './components/DownloadsFan.svelte';
   import Header from './components/Header.svelte';
@@ -901,8 +903,26 @@
     return `${n} ${n === 1 ? 'tab' : 'tabs'}`;
   }
 
+  const selectedTabsList = $derived(
+    visibleTabs.filter((tab) => selectedKeys.has(tab.key)),
+  );
+
+  // Refs for every selected row, handed to the rows so a drag that starts on a
+  // selected row carries the whole selection (multi-select drag in/out of
+  // folders). A single, unselected row drags on its own.
+  const selectionMembers = $derived(
+    selectedTabsList.map(
+      (tab): DragMember => ({
+        ref: tab.isHomePin
+          ? { kind: 'pin', homePinId: tab.homePinId as string }
+          : { kind: 'tab', tabId: tab.tabId as number },
+        sourceGroupId: tab.groupId,
+      }),
+    ),
+  );
+
   function selectedTabs(): PanelTab[] {
-    return visibleTabs.filter((tab) => selectedKeys.has(tab.key));
+    return selectedTabsList;
   }
 
   async function pinSelectedTabs(tabs: PanelTab[]) {
@@ -947,6 +967,31 @@
     });
   }
 
+  async function moveMembersToGroup(
+    groupId: string,
+    tabIds: number[],
+    homePinIds: string[],
+  ) {
+    if (tabIds.length === 0 && homePinIds.length === 0) return;
+    clearSelection();
+    await sendMessage({
+      action: 'MOVE_MEMBERS_TO_GROUP',
+      payload: { groupId, tabIds, homePinIds },
+    });
+  }
+
+  async function removeMembersFromGroup(members: {
+    tabIds: number[];
+    homePinIds: string[];
+  }) {
+    if (members.tabIds.length === 0 && members.homePinIds.length === 0) return;
+    clearSelection();
+    await sendMessage({
+      action: 'REMOVE_MEMBERS_FROM_GROUP',
+      payload: members,
+    });
+  }
+
   // Every space other than the one currently shown — the candidates a row,
   // selection, or folder can be moved into.
   function otherSpaces() {
@@ -955,21 +1000,68 @@
     );
   }
 
-  // Shared "Move to ›" submenu listing the other spaces; `onSelect` receives the
-  // chosen space id.
+  interface FolderMoveTarget {
+    id: string;
+    title: string;
+    tabIds: number[];
+    homePinIds: string[];
+  }
+
+  // Folders in the active space the given rows can move into, each carrying the
+  // subset it can accept. A pinned folder takes anything (live tabs get pinned);
+  // an unpinned folder takes live tabs and open home pins (closed pins can't
+  // join a live folder). Rows already in a folder skip it.
+  function folderMoveTargets(items: PanelTab[]): FolderMoveTarget[] {
+    const targets: FolderMoveTarget[] = [];
+    for (const group of [
+      ...panelState.pinnedGroups,
+      ...panelState.unpinnedGroups,
+    ]) {
+      const tabIds: number[] = [];
+      const homePinIds: string[] = [];
+      for (const item of items) {
+        if (item.groupId === group.id) continue;
+        if (item.isHomePin && item.homePinId) {
+          if (group.pinned || item.isOpen) homePinIds.push(item.homePinId);
+        } else if (!item.isHomePin && item.tabId !== null) {
+          tabIds.push(item.tabId);
+        }
+      }
+      if (tabIds.length + homePinIds.length > 0) {
+        targets.push({ id: group.id, title: group.title, tabIds, homePinIds });
+      }
+    }
+    return targets;
+  }
+
+  // Shared "Move to ›" submenu: the other spaces, then (after a divider) the
+  // folders in the current space. `onSelectSpace` receives the chosen space id;
+  // folder entries move their carried subset into the folder.
   function moveToSubmenu(
-    onSelect: (spaceId: string) => void,
+    onSelectSpace: (spaceId: string) => void,
+    folders: FolderMoveTarget[] = [],
   ): ContextMenuItem {
-    return {
-      type: 'submenu',
-      label: 'Move to',
-      items: otherSpaces().map((space) => ({
-        type: 'action',
-        label: space.name,
-        icon: space.icon,
-        onSelect: () => onSelect(space.id),
-      })),
-    };
+    const items: ContextMenuItem[] = otherSpaces().map((space) => ({
+      type: 'action',
+      label: space.name,
+      icon: space.icon,
+      onSelect: () => onSelectSpace(space.id),
+    }));
+
+    if (folders.length > 0) {
+      if (items.length > 0) items.push({ type: 'separator' });
+      for (const folder of folders) {
+        items.push({
+          type: 'action',
+          label: folder.title,
+          glyph: 'folder',
+          onSelect: () =>
+            void moveMembersToGroup(folder.id, folder.tabIds, folder.homePinIds),
+        });
+      }
+    }
+
+    return { type: 'submenu', label: 'Move to', items };
   }
 
   function bulkContextMenuItems(): ContextMenuItem[] {
@@ -984,6 +1076,7 @@
     const movableCount = groupableCount;
     const closable = tabs.filter((tab) => tab.isOpen && tab.tabId !== null);
     const targetSpaces = otherSpaces();
+    const folderTargets = folderMoveTargets(tabs);
     const items: ContextMenuItem[] = [];
 
     if (pinnable.length > 0) {
@@ -1014,9 +1107,12 @@
       });
     }
 
-    if (movableCount > 0 && targetSpaces.length > 0) {
+    if ((movableCount > 0 && targetSpaces.length > 0) || folderTargets.length > 0) {
       items.push(
-        moveToSubmenu((spaceId) => void moveSelectedTabsToSpace(tabs, spaceId)),
+        moveToSubmenu(
+          (spaceId) => void moveSelectedTabsToSpace(tabs, spaceId),
+          folderTargets,
+        ),
       );
     }
 
@@ -1064,7 +1160,11 @@
       onSelect: () => void renameViaDialog(tab),
     });
 
-    if (targetSpaces.length > 0 && (tab.homePinId || tab.tabId !== null)) {
+    const folderTargets = folderMoveTargets([tab]);
+    if (
+      (targetSpaces.length > 0 || folderTargets.length > 0) &&
+      (tab.homePinId || tab.tabId !== null)
+    ) {
       items.push({ type: 'separator' });
 
       items.push(
@@ -1078,6 +1178,7 @@
                 homePinId: tab.homePinId ?? undefined,
               },
             }),
+          folderTargets,
         ),
       );
     }
@@ -1233,13 +1334,6 @@
     }
 
     await closeGroup(group.id);
-  }
-
-  async function moveToGroup(groupId: string, member: GroupMemberRef) {
-    await sendMessage({
-      action: 'MOVE_TO_GROUP',
-      payload: { groupId, ...member },
-    });
   }
 
   async function removeFromGroup(member: GroupMemberRef) {
@@ -1454,6 +1548,7 @@
     spaceIcon={activeSpace?.icon ?? 'circle'}
     searching={isSearching}
     {selectedKeys}
+    {selectionMembers}
     {copiedKey}
     onActivate={activateTab}
     onCreateTab={() => sendMessage({ action: 'CREATE_TAB', payload: {} })}
@@ -1476,8 +1571,9 @@
     onContextMenu={openContextMenu}
     onGroupContextMenu={openGroupContextMenu}
     onUpdateGroup={updateGroup}
-    onDropMember={moveToGroup}
-    onRemoveFromGroup={removeFromGroup}
+    onDropMembers={(groupId, members) =>
+      moveMembersToGroup(groupId, members.tabIds, members.homePinIds)}
+    onRemoveMembers={removeMembersFromGroup}
     onCloseGroup={closeGroup}
     onPinGroup={pinGroup}
     onUnpinGroup={unpinGroup}
@@ -1569,6 +1665,10 @@
   {/if}
 
   <DialogHost />
+
+  {#if selectedTabsList.length > 1}
+    <DragPreview tabs={selectedTabsList} />
+  {/if}
 </div>
 
 <style>

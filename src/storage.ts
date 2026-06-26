@@ -1549,6 +1549,40 @@ export function unpinGroup(
   return { ...state, spaces, tabSpaces, tabGroupMembership, tabAliases };
 }
 
+/**
+ * Demote a single open home pin to a loose live tab in its space: the live tab
+ * is kept (carrying the pin's alias) and the home pin record is dropped. A
+ * no-op for a closed pin (no live tab to keep) or an unknown pin. Used when an
+ * open home pin is moved into an unpinned (live-tab) folder.
+ */
+export function demoteHomePinToTab(
+  state: StoredStateV7,
+  homePinId: string,
+  spaceId = getActiveSpaceId(state),
+): StoredStateV7 {
+  const space = state.spaces.find((candidate) => candidate.id === spaceId);
+  const pin = space?.homePins.find((candidate) => candidate.id === homePinId);
+  if (!space || !pin || typeof pin.tabId !== 'number') return state;
+
+  const key = tabKey(pin.tabId);
+  const tabAliases = { ...state.tabAliases };
+  if (pin.alias) tabAliases[key] = pin.alias;
+
+  return {
+    ...state,
+    tabAliases,
+    tabSpaces: { ...state.tabSpaces, [key]: space.id },
+    spaces: state.spaces.map((candidate) =>
+      candidate.id === space.id
+        ? {
+            ...candidate,
+            homePins: candidate.homePins.filter((p) => p.id !== homePinId),
+          }
+        : candidate,
+    ),
+  };
+}
+
 export function pruneTabGroupMembershipForTabs(
   state: StoredStateV7,
   liveTabIds: Set<number>,

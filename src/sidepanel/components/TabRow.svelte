@@ -2,7 +2,7 @@
   import { get } from 'svelte/store';
   import { getFaviconUrl } from '../../lib/url';
   import type { PanelTab, SectionUnitRef } from '../../types';
-  import { dragState } from '../dragState';
+  import { dragImageEl, dragState, type DragMember } from '../dragState';
   import Icon from './Icon.svelte';
   import InlineEdit from './InlineEdit.svelte';
 
@@ -11,6 +11,8 @@
   interface Props {
     tab: PanelTab;
     selected: boolean;
+    /** Refs of all selected rows, used to carry a multi-selection on drag. */
+    selectionMembers: DragMember[];
     copied?: boolean;
     onActivate: (tab: PanelTab) => void;
     onSelect: (tab: PanelTab, mods: { toggle: boolean; range: boolean }) => void;
@@ -32,6 +34,7 @@
   let {
     tab,
     selected,
+    selectionMembers,
     copied = false,
     onActivate,
     onSelect,
@@ -59,6 +62,8 @@
   function reorderTargetValid(): boolean {
     const drag = get(dragState);
     if (!drag || drag.pinned !== tab.isHomePin) return false;
+    // A multi-selection drag only joins/leaves folders, never reorders.
+    if (drag.members && drag.members.length > 1) return false;
     const self = selfRef();
     if (
       drag.ref.kind === self.kind &&
@@ -119,15 +124,22 @@
   }
 
   function handleDragStart(event: DragEvent) {
+    // Dragging a row that's part of a multi-selection carries the whole
+    // selection; dragging any other row is a single-item drag.
+    const multi = selected && selectionMembers.length > 1;
     dragState.set({
       ref: selfRef(),
       pinned: tab.isHomePin,
       sourceGroupId: tab.groupId,
+      members: multi ? selectionMembers : undefined,
     });
     if (event.dataTransfer) {
       // Some data is required for a valid drag; detection uses the store.
       event.dataTransfer.setData('text/plain', tab.key);
       event.dataTransfer.effectAllowed = 'move';
+      // Multi-selection drags show a fanned stack rather than the single row.
+      const stack = multi ? get(dragImageEl) : null;
+      if (stack) event.dataTransfer.setDragImage(stack, 16, 16);
     }
   }
 

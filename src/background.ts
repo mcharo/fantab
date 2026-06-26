@@ -42,6 +42,7 @@ import {
   createGroup,
   createSpace,
   deleteSpace,
+  demoteHomePinToTab,
   findGroupById,
   findHomePinById,
   findHomePinByTabId,
@@ -136,7 +137,9 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'CREATE_GROUP',
   'UPDATE_GROUP',
   'MOVE_TO_GROUP',
+  'MOVE_MEMBERS_TO_GROUP',
   'REMOVE_FROM_GROUP',
+  'REMOVE_MEMBERS_FROM_GROUP',
   'PIN_GROUP',
   'UNPIN_GROUP',
   'OPEN_ALL_IN_GROUP',
@@ -1296,6 +1299,79 @@ async function handleMoveToGroup(
   return getPanelState(payload.windowId);
 }
 
+async function handleMoveMembersToGroup(
+  payload: Extract<RequestMessage, { action: 'MOVE_MEMBERS_TO_GROUP' }>['payload'],
+): Promise<PanelState> {
+  const { groupId, tabIds, homePinIds, windowId } = payload;
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const space = getActiveSpace(state, windowId);
+  const group = findGroupById(state, groupId);
+  if (!group) return getPanelState(windowId);
+
+  if (group.pinned) {
+    // Pinned target: existing pins just join; live tabs are pinned as home.
+    for (const homePinId of homePinIds) {
+      state = addHomePinToGroup(state, homePinId, groupId, space.id);
+    }
+    state = await pinTabsIntoGroup(state, tabIds, groupId, space.id);
+    return saveAndBroadcast(state, windowId);
+  }
+
+  // Unpinned target: members end up as live tabs. Open home pins are demoted to
+  // loose live tabs first (and persisted) so the strip positioning below sees
+  // them as live; closed pins can't join a live folder and are skipped.
+  const fromPins: number[] = [];
+  for (const homePinId of homePinIds) {
+    const pin = findHomePinById(state, homePinId);
+    if (!pin || typeof pin.tabId !== 'number') continue;
+    state = demoteHomePinToTab(state, homePinId, space.id);
+    fromPins.push(pin.tabId);
+  }
+  const joiningTabIds = [...tabIds, ...fromPins];
+  if (joiningTabIds.length === 0) return saveAndBroadcast(state, windowId);
+  await saveState(state);
+
+  // Cluster the joining tabs immediately after the folder's existing members so
+  // the folder keeps its place. Membership is applied last, so each tab is still
+  // loose while planned (mirrors the single-tab join). Reversed so the final
+  // strip order matches the selection order.
+  for (const tabId of [...joiningTabIds].reverse()) {
+    const panel = await getPanelState(windowId);
+    const plan = planUnpinnedReorder(
+      collectUnpinnedTabs(panel),
+      { kind: 'tab', tabId },
+      { kind: 'folder', groupId },
+      'after',
+    );
+    if (plan) await chrome.tabs.move(plan.tabIds, { index: plan.index });
+  }
+
+  let nextState = await loadState();
+  for (const tabId of joiningTabIds) {
+    nextState = setTabGroup(nextState, tabId, groupId);
+  }
+  return saveAndBroadcast(nextState, windowId);
+}
+
+async function handleRemoveMembersFromGroup(
+  payload: Extract<
+    RequestMessage,
+    { action: 'REMOVE_MEMBERS_FROM_GROUP' }
+  >['payload'],
+): Promise<PanelState> {
+  let state = await loadState();
+  const space = getActiveSpace(state, payload.windowId);
+
+  for (const homePinId of payload.homePinIds) {
+    state = setHomePinGroup(state, homePinId, null, space.id);
+  }
+  for (const tabId of payload.tabIds) {
+    state = removeTabFromGroup(state, tabId);
+  }
+
+  return saveAndBroadcast(state, payload.windowId);
+}
+
 async function handleRemoveFromGroup(
   payload: Extract<RequestMessage, { action: 'REMOVE_FROM_GROUP' }>['payload'],
 ): Promise<PanelState> {
@@ -1818,8 +1894,12 @@ async function handleMessage(
       );
     case 'MOVE_TO_GROUP':
       return handleMoveToGroup(message.payload);
+    case 'MOVE_MEMBERS_TO_GROUP':
+      return handleMoveMembersToGroup(message.payload);
     case 'REMOVE_FROM_GROUP':
       return handleRemoveFromGroup(message.payload);
+    case 'REMOVE_MEMBERS_FROM_GROUP':
+      return handleRemoveMembersFromGroup(message.payload);
     case 'PIN_GROUP':
       return handlePinGroup(message.payload.groupId, message.payload.windowId);
     case 'UNPIN_GROUP':

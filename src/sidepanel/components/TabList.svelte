@@ -6,7 +6,7 @@
     SectionUnitRef,
     SpaceIcon,
   } from '../../types';
-  import { dragState } from '../dragState';
+  import { dragState, type DragMember } from '../dragState';
   import type { SectionEntry } from '../sectionOrder';
   import { visibleGroupTabs } from '../../lib/folderView';
   import CloseAllBar from './CloseAllBar.svelte';
@@ -17,9 +17,9 @@
 
   type DropPosition = 'before' | 'after';
 
-  interface GroupMemberRef {
-    tabId?: number;
-    homePinId?: string;
+  interface GroupMembers {
+    tabIds: number[];
+    homePinIds: string[];
   }
 
   interface Props {
@@ -29,6 +29,7 @@
     spaceIcon: SpaceIcon;
     searching?: boolean;
     selectedKeys: Set<string>;
+    selectionMembers: DragMember[];
     copiedKey: string | null;
     onActivate: (tab: PanelTab) => void;
     onCreateTab: () => void;
@@ -46,8 +47,8 @@
       groupId: string,
       updates: { title?: string; collapsed?: boolean; peek?: boolean },
     ) => void;
-    onDropMember: (groupId: string, member: GroupMemberRef) => void;
-    onRemoveFromGroup: (member: GroupMemberRef) => void;
+    onDropMembers: (groupId: string, members: GroupMembers) => void;
+    onRemoveMembers: (members: GroupMembers) => void;
     onCloseGroup: (groupId: string) => void;
     onPinGroup: (groupId: string) => void;
     onUnpinGroup: (groupId: string) => void;
@@ -73,6 +74,7 @@
     spaceIcon,
     searching = false,
     selectedKeys,
+    selectionMembers,
     copiedKey,
     onActivate,
     onCreateTab,
@@ -87,8 +89,8 @@
     onContextMenu,
     onGroupContextMenu,
     onUpdateGroup,
-    onDropMember,
-    onRemoveFromGroup,
+    onDropMembers,
+    onRemoveMembers,
     onCloseGroup,
     onPinGroup,
     onUnpinGroup,
@@ -131,6 +133,8 @@
   function folderReorderValid(group: PanelGroup): boolean {
     const drag = get(dragState);
     if (!drag || drag.pinned !== group.pinned) return false;
+    // A multi-selection drag only joins/leaves folders, never reorders.
+    if (drag.members && drag.members.length > 1) return false;
     if (drag.ref.kind === 'folder' && drag.ref.groupId === group.id) {
       return false;
     }
@@ -168,19 +172,29 @@
     dragState.set(null);
   }
 
-  // Dropping a row on empty list space pulls it out of whatever folder it was in
-  // (a no-op for already-loose rows or folder drags).
+  // Dropping a row (or a multi-selection) on empty list space pulls every
+  // dragged member out of whatever folder it was in (loose rows and folder
+  // drags are ignored).
   function handleRootDrop(event: DragEvent) {
     event.preventDefault();
     event.stopPropagation();
     const drag = get(dragState);
     folderDropTarget = null;
     dragState.set(null);
-    if (!drag || drag.ref.kind === 'folder' || drag.sourceGroupId === null) {
-      return;
+    if (!drag || drag.ref.kind === 'folder') return;
+
+    const members = drag.members ?? [
+      { ref: drag.ref, sourceGroupId: drag.sourceGroupId },
+    ];
+    const tabIds: number[] = [];
+    const homePinIds: string[] = [];
+    for (const member of members) {
+      if (member.sourceGroupId === null) continue; // already loose
+      if (member.ref.kind === 'tab') tabIds.push(member.ref.tabId);
+      else if (member.ref.kind === 'pin') homePinIds.push(member.ref.homePinId);
     }
-    if (drag.ref.kind === 'tab') onRemoveFromGroup({ tabId: drag.ref.tabId });
-    else onRemoveFromGroup({ homePinId: drag.ref.homePinId });
+    if (tabIds.length === 0 && homePinIds.length === 0) return;
+    onRemoveMembers({ tabIds, homePinIds });
   }
 </script>
 
@@ -188,6 +202,7 @@
   <TabRow
     {tab}
     selected={selectedKeys.has(tab.key)}
+    {selectionMembers}
     copied={copiedKey === tab.key}
     {onActivate}
     {onSelect}
@@ -220,7 +235,7 @@
     <GroupHeader
       {group}
       {onUpdateGroup}
-      {onDropMember}
+      {onDropMembers}
       {onCloseGroup}
       {onPinGroup}
       {onUnpinGroup}

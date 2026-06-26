@@ -226,6 +226,29 @@ export interface RemoveFromGroupMessage {
   payload: { tabId?: number; homePinId?: string } & WindowScopedPayload;
 }
 
+/**
+ * Move a selection of live tabs and/or home pins into a folder. The folder's
+ * type drives conversions: a pinned folder pins live tabs as home pins; an
+ * unpinned folder turns open home pins into live tabs (closed pins are skipped).
+ */
+export interface MoveMembersToGroupMessage {
+  action: 'MOVE_MEMBERS_TO_GROUP';
+  payload: {
+    groupId: string;
+    tabIds: number[];
+    homePinIds: string[];
+  } & WindowScopedPayload;
+}
+
+/** Remove a selection of live tabs and/or home pins from their folders. */
+export interface RemoveMembersFromGroupMessage {
+  action: 'REMOVE_MEMBERS_FROM_GROUP';
+  payload: {
+    tabIds: number[];
+    homePinIds: string[];
+  } & WindowScopedPayload;
+}
+
 export interface PinGroupMessage {
   action: 'PIN_GROUP';
   payload: { groupId: string } & WindowScopedPayload;
@@ -333,7 +356,9 @@ export type RequestMessage =
   | CreateGroupMessage
   | UpdateGroupMessage
   | MoveToGroupMessage
+  | MoveMembersToGroupMessage
   | RemoveFromGroupMessage
+  | RemoveMembersFromGroupMessage
   | PinGroupMessage
   | UnpinGroupMessage
   | OpenAllInGroupMessage

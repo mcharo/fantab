@@ -6,6 +6,7 @@ import {
   createGroup,
   createSpace,
   deleteSpace,
+  demoteHomePinToTab,
   findGroupById,
   getRememberedActiveTabId,
   isStoredStateV7,
@@ -1054,6 +1055,32 @@ describe('fantab tab groups', () => {
     expect(
       findGroupById(normalizeState(grouped), created.groupId),
     ).toBeDefined();
+  });
+});
+
+describe('demoteHomePinToTab', () => {
+  it('turns an open home pin into a loose live tab, keeping its alias', () => {
+    // pin-1 is open (tabId 1) with alias "Mail".
+    const demoted = demoteHomePinToTab(baseState, 'pin-1', DEFAULT_SPACE_ID);
+
+    expect(
+      demoted.spaces[0].homePins.find((pin) => pin.id === 'pin-1'),
+    ).toBeUndefined();
+    expect(demoted.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
+    expect(demoted.tabAliases['1']).toBe('Mail');
+  });
+
+  it('is a no-op for a closed home pin (no live tab to keep)', () => {
+    // pin-2 is closed (tabId null).
+    expect(demoteHomePinToTab(baseState, 'pin-2', DEFAULT_SPACE_ID)).toBe(
+      baseState,
+    );
+  });
+
+  it('ignores an unknown home pin id', () => {
+    expect(demoteHomePinToTab(baseState, 'missing', DEFAULT_SPACE_ID)).toBe(
+      baseState,
+    );
   });
 });
 

@@ -6,9 +6,9 @@
   import { dragState } from '../dragState';
   import Icon from './Icon.svelte';
 
-  interface GroupMemberRef {
-    tabId?: number;
-    homePinId?: string;
+  interface GroupMembers {
+    tabIds: number[];
+    homePinIds: string[];
   }
 
   interface Props {
@@ -17,7 +17,7 @@
       groupId: string,
       updates: { title?: string; collapsed?: boolean; peek?: boolean },
     ) => void;
-    onDropMember: (groupId: string, member: GroupMemberRef) => void;
+    onDropMembers: (groupId: string, members: GroupMembers) => void;
     onCloseGroup: (groupId: string) => void;
     onPinGroup: (groupId: string) => void;
     onUnpinGroup: (groupId: string) => void;
@@ -28,7 +28,7 @@
   let {
     group,
     onUpdateGroup,
-    onDropMember,
+    onDropMembers,
     onCloseGroup,
     onPinGroup,
     onUnpinGroup,
@@ -58,26 +58,27 @@
         : 'folder',
   );
 
-  // The member ref for the current drag if dropping it on this header would add
-  // it to this folder, or null. A pinned folder accepts home pins, an unpinned
-  // folder accepts live tabs; an item already in this folder isn't a join.
-  function joinMemberFromDrag(): GroupMemberRef | null {
+  // The dragged rows that dropping on this header would add to this folder, or
+  // null when none apply. Any non-folder row from another folder (or loose) is a
+  // candidate — the backend converts as needed (a live tab pins into a pinned
+  // folder; an open home pin becomes a live tab in an unpinned folder). Rows
+  // already in this folder are skipped.
+  function joinMembersFromDrag(): GroupMembers | null {
     const drag = get(dragState);
-    if (
-      !drag ||
-      drag.ref.kind === 'folder' ||
-      drag.pinned !== group.pinned ||
-      drag.sourceGroupId === group.id
-    ) {
-      return null;
+    if (!drag || drag.ref.kind === 'folder') return null;
+
+    const members = drag.members ?? [
+      { ref: drag.ref, sourceGroupId: drag.sourceGroupId },
+    ];
+    const tabIds: number[] = [];
+    const homePinIds: string[] = [];
+    for (const member of members) {
+      if (member.sourceGroupId === group.id) continue;
+      if (member.ref.kind === 'tab') tabIds.push(member.ref.tabId);
+      else if (member.ref.kind === 'pin') homePinIds.push(member.ref.homePinId);
     }
-    if (group.pinned && drag.ref.kind === 'pin') {
-      return { homePinId: drag.ref.homePinId };
-    }
-    if (!group.pinned && drag.ref.kind === 'tab') {
-      return { tabId: drag.ref.tabId };
-    }
-    return null;
+    if (tabIds.length === 0 && homePinIds.length === 0) return null;
+    return { tabIds, homePinIds };
   }
 
   // The header is the drag handle for reordering the folder. Reordering itself
@@ -104,7 +105,7 @@
     // Only a join (adding the dragged item to this folder) is handled here;
     // folder reorders are owned by the surrounding folder block. Stop the event
     // so the block doesn't also show a reorder line over the header.
-    if (!joinMemberFromDrag()) return;
+    if (!joinMembersFromDrag()) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
@@ -112,12 +113,12 @@
   }
 
   function handleDrop(event: DragEvent) {
-    const member = joinMemberFromDrag();
+    const members = joinMembersFromDrag();
     dragActive = false;
-    if (!member) return;
+    if (!members) return;
     event.preventDefault();
     event.stopPropagation();
-    onDropMember(group.id, member);
+    onDropMembers(group.id, members);
   }
 
   function handleDragLeave(event: DragEvent) {

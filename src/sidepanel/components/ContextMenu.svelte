@@ -1,13 +1,16 @@
 <script lang="ts" module>
   import type { SpaceIcon } from '../../types';
+  import type { IconName } from './Icon.svelte';
 
   export type ContextMenuItem =
     | {
         type: 'action';
         label: string;
         onSelect: () => void;
-        /** Optional leading glyph (e.g. a space's icon/emoji). */
+        /** Optional leading space icon/emoji, rendered via SpaceGlyph. */
         icon?: SpaceIcon;
+        /** Optional leading control icon (e.g. a folder), rendered via Icon. */
+        glyph?: IconName;
         danger?: boolean;
         disabled?: boolean;
       }
@@ -165,6 +168,8 @@
                   >
                     {#if sub.icon !== undefined}
                       <span class="item-icon"><SpaceGlyph icon={sub.icon} size={16} /></span>
+                    {:else if sub.glyph !== undefined}
+                      <span class="item-icon"><Icon name={sub.glyph} size={16} /></span>
                     {/if}
                     {sub.label}
                   </button>
@@ -184,6 +189,8 @@
         >
           {#if item.icon !== undefined}
             <span class="item-icon"><SpaceGlyph icon={item.icon} size={16} /></span>
+          {:else if item.glyph !== undefined}
+            <span class="item-icon"><Icon name={item.glyph} size={16} /></span>
           {/if}
           {item.label}
         </button>
