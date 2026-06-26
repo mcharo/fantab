@@ -11,6 +11,7 @@ import {
   isStoredStateV7,
   loadState,
   moveGroup,
+  migrateTabId,
   moveHomePin,
   moveHomePinRelativeTo,
   moveHomePinToSpace,
@@ -1052,5 +1053,101 @@ describe('fantab tab groups', () => {
     expect(
       findGroupById(normalizeState(grouped), created.groupId),
     ).toBeDefined();
+  });
+});
+
+describe('migrateTabId', () => {
+  // Models Chrome's Memory Saver discard, which replaces a background tab with a
+  // new id (chrome.tabs.onReplaced). Every id-keyed binding must follow the tab
+  // to its new id so it stays in its own space rather than reconcile pruning the
+  // old id and re-parking the new one as a loose tab in the active space.
+  function discardableState(): StoredStateV7 {
+    return {
+      version: 7,
+      activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': 'focus' },
+      lastActiveTabBySpace: { [`1:${DEFAULT_SPACE_ID}`]: 7 },
+      tabAliases: { '7': 'Mail alias' },
+      tabSpaces: { '7': DEFAULT_SPACE_ID, '8': 'focus' },
+      tabGroupMembership: { '8': 'group-1' },
+      spaces: [
+        {
+          id: DEFAULT_SPACE_ID,
+          name: 'Default',
+          icon: 'circle',
+          createdAt: 1,
+          order: 0,
+          homePins: [
+            {
+              id: 'pin-1',
+              homeUrl: 'https://mail.example.com/',
+              alias: 'Mail',
+              faviconUrl: '',
+              tabId: 7,
+              lastKnownUrl: 'https://mail.example.com/inbox',
+              lastKnownTitle: 'Inbox',
+              createdAt: 1,
+              order: 0,
+            },
+          ],
+        },
+        {
+          id: 'focus',
+          name: 'Focus',
+          icon: 'diamond',
+          createdAt: 2,
+          order: 1,
+          homePins: [],
+          groups: [
+            {
+              id: 'group-1',
+              title: 'Work',
+              pinned: false,
+              collapsed: false,
+              peek: false,
+              order: 0,
+              createdAt: 2,
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  it('moves a home pin binding and space assignment to the new tab id', () => {
+    const migrated = migrateTabId(discardableState(), 7, 100);
+
+    expect(migrated.spaces[0].homePins[0].tabId).toBe(100);
+    expect(migrated.tabSpaces['100']).toBe(DEFAULT_SPACE_ID);
+    expect(migrated.tabSpaces['7']).toBeUndefined();
+    expect(migrated.tabAliases['100']).toBe('Mail alias');
+    expect(migrated.tabAliases['7']).toBeUndefined();
+    expect(migrated.lastActiveTabBySpace[`1:${DEFAULT_SPACE_ID}`]).toBe(100);
+  });
+
+  it('moves unpinned-group membership and space assignment to the new id', () => {
+    const migrated = migrateTabId(discardableState(), 8, 200);
+
+    expect(migrated.tabSpaces['200']).toBe('focus');
+    expect(migrated.tabSpaces['8']).toBeUndefined();
+    expect(migrated.tabGroupMembership?.['200']).toBe('group-1');
+    expect(migrated.tabGroupMembership?.['8']).toBeUndefined();
+  });
+
+  it('survives a full reconcile against the post-discard tab list', () => {
+    // The whole point: after migrating, reconcile must keep the pin bound and in
+    // its own space, not re-park it as a loose tab in the active (focus) space.
+    const migrated = migrateTabId(discardableState(), 7, 100);
+    const reconciled = reconcileStateForTabs(migrated, [
+      tab({ id: 100, url: 'https://mail.example.com/inbox', windowId: 1 }),
+      tab({ id: 8, url: 'https://work.example.com/', windowId: 1 }),
+    ]);
+
+    expect(reconciled.spaces[0].homePins[0].tabId).toBe(100);
+    expect(reconciled.tabSpaces['100']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('returns the same reference when the old id is not referenced', () => {
+    const state = discardableState();
+    expect(migrateTabId(state, 999, 1000)).toBe(state);
   });
 });

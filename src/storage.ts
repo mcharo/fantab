@@ -1468,6 +1468,84 @@ export function pruneTabGroupMembershipForTabs(
   return { ...state, tabGroupMembership };
 }
 
+/**
+ * Re-key every id-keyed binding from `oldTabId` to `newTabId`. Chrome's Memory
+ * Saver discards a background tab by replacing it with a fresh id (surfaced via
+ * `chrome.tabs.onReplaced`); without re-keying, the next reconcile prunes the
+ * stale id and re-parks the replacement as a loose tab in the active space —
+ * dropping it (and any home-pin binding) out of its real space. Migrating here
+ * keeps the tab, its space, its pin binding, its folder membership, and its
+ * alias intact across the discard.
+ *
+ * Returns the same reference when `oldTabId` isn't referenced, so callers can
+ * cheaply skip persisting.
+ */
+export function migrateTabId(
+  state: StoredStateV7,
+  oldTabId: number,
+  newTabId: number,
+): StoredStateV7 {
+  if (oldTabId === newTabId) return state;
+
+  const oldKey = tabKey(oldTabId);
+  const newKey = tabKey(newTabId);
+
+  let changed = false;
+
+  const tabSpaces = { ...state.tabSpaces };
+  if (oldKey in tabSpaces) {
+    tabSpaces[newKey] = tabSpaces[oldKey];
+    delete tabSpaces[oldKey];
+    changed = true;
+  }
+
+  const tabAliases = { ...state.tabAliases };
+  if (oldKey in tabAliases) {
+    tabAliases[newKey] = tabAliases[oldKey];
+    delete tabAliases[oldKey];
+    changed = true;
+  }
+
+  const tabGroupMembership = { ...(state.tabGroupMembership ?? {}) };
+  if (oldKey in tabGroupMembership) {
+    tabGroupMembership[newKey] = tabGroupMembership[oldKey];
+    delete tabGroupMembership[oldKey];
+    changed = true;
+  }
+
+  const lastActiveTabBySpace = { ...state.lastActiveTabBySpace };
+  for (const [key, tabId] of Object.entries(lastActiveTabBySpace)) {
+    if (tabId === oldTabId) {
+      lastActiveTabBySpace[key] = newTabId;
+      changed = true;
+    }
+  }
+
+  const spaces = state.spaces.map((space) => {
+    let spaceChanged = false;
+    const homePins = space.homePins.map((pin) => {
+      if (pin.tabId !== oldTabId) return pin;
+      spaceChanged = true;
+      return { ...pin, tabId: newTabId };
+    });
+    return spaceChanged ? { ...space, homePins } : space;
+  });
+  if (spaces.some((space, index) => space !== state.spaces[index])) {
+    changed = true;
+  }
+
+  if (!changed) return state;
+
+  return {
+    ...state,
+    tabSpaces,
+    tabAliases,
+    tabGroupMembership,
+    lastActiveTabBySpace,
+    spaces,
+  };
+}
+
 export function reconcileStateForTabs(
   state: StoredStateV7,
   liveTabs: chrome.tabs.Tab[],

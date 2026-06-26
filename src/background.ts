@@ -49,6 +49,7 @@ import {
   getRememberedActiveTabId,
   generateId,
   loadState,
+  migrateTabId,
   moveHomePinRelativeTo,
   moveHomePinToSpace,
   planUnpinnedReorder,
@@ -2166,6 +2167,29 @@ async function handleTabRemoved(
   void broadcastPanelState();
 }
 
+// Chrome's Memory Saver discards a background tab by replacing it with a new
+// id, surfaced here (not via onRemoved/onCreated). Without re-keying, the next
+// reconcile would prune the stale id and re-park the replacement as a loose tab
+// in the active space — the cause of pinned/other-space tabs "falling through"
+// into the active space as unpinned tabs. Migrate every id-keyed binding to the
+// new id so the tab stays in its own space with its pin/folder/alias intact.
+async function handleTabReplaced(
+  addedTabId: number,
+  removedTabId: number,
+): Promise<void> {
+  await evictMediaTab(removedTabId);
+
+  const state = await loadState();
+  const migrated = migrateTabId(state, removedTabId, addedTabId);
+
+  if (migrated !== state) {
+    await saveAndBroadcast(migrated);
+    return;
+  }
+
+  void broadcastPanelState();
+}
+
 async function rememberActivatedTab(
   tabId: number,
   windowId: number,
@@ -2227,6 +2251,9 @@ chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
   void evictMediaTab(tabId);
   if (removeInfo.isWindowClosing) return;
   void handleTabRemoved(tabId, removeInfo.windowId);
+});
+chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
+  void handleTabReplaced(addedTabId, removedTabId);
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // A navigation invalidates the previous page's media report; the fresh page's
