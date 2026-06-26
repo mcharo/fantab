@@ -11,6 +11,7 @@ import {
   isStoredStateV7,
   loadState,
   moveGroup,
+  moveGroupToSpace,
   migrateTabId,
   moveHomePin,
   moveHomePinRelativeTo,
@@ -1053,6 +1054,107 @@ describe('fantab tab groups', () => {
     expect(
       findGroupById(normalizeState(grouped), created.groupId),
     ).toBeDefined();
+  });
+});
+
+describe('moveGroupToSpace', () => {
+  function withSecondSpace(): { state: StoredStateV7; secondSpaceId: string } {
+    const state = createSpace(baseState, 'Work', 1);
+    const secondSpaceId = state.spaces[state.spaces.length - 1].id;
+    return { state, secondSpaceId };
+  }
+
+  function spaceHoldingGroup(
+    state: StoredStateV7,
+    groupId: string,
+  ): string | undefined {
+    return state.spaces.find((space) =>
+      (space.groups ?? []).some((group) => group.id === groupId),
+    )?.id;
+  }
+
+  it('moves a pinned folder and its home pins to the target space', () => {
+    const { state: withSpace, secondSpaceId } = withSecondSpace();
+    const folder = createGroup(
+      withSpace,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setHomePinGroup(
+      folder.state,
+      'pin-1',
+      folder.groupId,
+      DEFAULT_SPACE_ID,
+    );
+
+    const moved = moveGroupToSpace(grouped, folder.groupId, secondSpaceId);
+
+    // The folder definition and its pin leave the source space...
+    const sourceSpace = moved.spaces.find((s) => s.id === DEFAULT_SPACE_ID)!;
+    expect(sourceSpace.groups ?? []).toHaveLength(0);
+    expect(
+      sourceSpace.homePins.find((pin) => pin.id === 'pin-1'),
+    ).toBeUndefined();
+
+    // ...and land in the target space, the pin keeping its folder membership.
+    expect(spaceHoldingGroup(moved, folder.groupId)).toBe(secondSpaceId);
+    const targetSpace = moved.spaces.find((s) => s.id === secondSpaceId)!;
+    expect(
+      targetSpace.homePins.find((pin) => pin.id === 'pin-1')?.groupId,
+    ).toBe(folder.groupId);
+
+    // The open tab backing the pin follows it into the target space.
+    expect(moved.tabSpaces['1']).toBe(secondSpaceId);
+
+    // Normalization keeps the folder intact in the destination.
+    expect(spaceHoldingGroup(normalizeState(moved), folder.groupId)).toBe(
+      secondSpaceId,
+    );
+  });
+
+  it('moves an unpinned folder and its live tabs to the target space', () => {
+    const { state: withSpace, secondSpaceId } = withSecondSpace();
+    const folder = createGroup(
+      withSpace,
+      { title: 'Open work', pinned: false },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setTabGroup(folder.state, 1, folder.groupId);
+
+    const moved = moveGroupToSpace(grouped, folder.groupId, secondSpaceId);
+
+    expect(spaceHoldingGroup(moved, folder.groupId)).toBe(secondSpaceId);
+    // Membership is preserved while the tab is reassigned to the target space.
+    expect(moved.tabGroupMembership?.['1']).toBe(folder.groupId);
+    expect(moved.tabSpaces['1']).toBe(secondSpaceId);
+
+    // Normalization keeps the unpinned folder in the destination.
+    expect(spaceHoldingGroup(normalizeState(moved), folder.groupId)).toBe(
+      secondSpaceId,
+    );
+  });
+
+  it('is a no-op when the target is the folder’s current space', () => {
+    const folder = createGroup(
+      baseState,
+      { title: 'Reading', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setHomePinGroup(
+      folder.state,
+      'pin-1',
+      folder.groupId,
+      DEFAULT_SPACE_ID,
+    );
+
+    expect(moveGroupToSpace(grouped, folder.groupId, DEFAULT_SPACE_ID)).toBe(
+      grouped,
+    );
+  });
+
+  it('ignores an unknown group id', () => {
+    const { state, secondSpaceId } = withSecondSpace();
+    expect(moveGroupToSpace(state, 'missing', secondSpaceId)).toBe(state);
   });
 });
 

@@ -1088,6 +1088,107 @@ export function createGroup(
   };
 }
 
+/**
+ * Move a whole folder to another space, carrying its members along so the
+ * folder stays intact (normalization drops a folder whose members live in a
+ * different space). A pinned folder's home pins move with it (keeping their
+ * `groupId`); an unpinned folder's live tabs are reassigned to the target space
+ * while their `tabGroupMembership` is preserved.
+ */
+export function moveGroupToSpace(
+  state: StoredStateV7,
+  groupId: string,
+  targetSpaceId: string,
+): StoredStateV7 {
+  const entry = findGroupEntry(state, groupId);
+  if (!entry) return state;
+
+  const { space: sourceSpace, group } = entry;
+  if (sourceSpace.id === targetSpaceId) return state;
+
+  const targetSpace = state.spaces.find((space) => space.id === targetSpaceId);
+  if (!targetSpace) return state;
+
+  const nextGroupOrder =
+    (targetSpace.groups ?? []).reduce(
+      (max, candidate) => Math.max(max, candidate.order),
+      -1,
+    ) + 1;
+  const movedGroup: FantabGroup = { ...group, order: nextGroupOrder };
+
+  if (group.pinned) {
+    const members = sourceSpace.homePins
+      .filter((pin) => pin.groupId === groupId)
+      .sort((a, b) => a.order - b.order);
+    const memberIds = new Set(members.map((pin) => pin.id));
+    let nextTargetPinOrder =
+      targetSpace.homePins.reduce((max, pin) => Math.max(max, pin.order), -1) + 1;
+
+    let nextState: StoredStateV7 = {
+      ...state,
+      spaces: state.spaces.map((space) => {
+        if (space.id === sourceSpace.id) {
+          return {
+            ...space,
+            groups: (space.groups ?? []).filter((g) => g.id !== groupId),
+            homePins: space.homePins
+              .filter((pin) => !memberIds.has(pin.id))
+              .sort((a, b) => a.order - b.order)
+              .map((pin, index) => ({ ...pin, order: index })),
+          };
+        }
+        if (space.id === targetSpace.id) {
+          return {
+            ...space,
+            groups: [...(space.groups ?? []), movedGroup],
+            homePins: [
+              ...space.homePins,
+              ...members.map((pin) => ({ ...pin, order: nextTargetPinOrder++ })),
+            ],
+          };
+        }
+        return space;
+      }),
+    };
+
+    // Keep any open tabs backing these pins in the same space as the pin.
+    for (const pin of members) {
+      if (typeof pin.tabId === 'number') {
+        nextState = assignTabToSpace(nextState, pin.tabId, targetSpace.id);
+      }
+    }
+
+    return nextState;
+  }
+
+  // Unpinned folder: members are live tabs tracked by `tabGroupMembership`.
+  const memberTabKeys = Object.entries(state.tabGroupMembership ?? {})
+    .filter(([, memberGroupId]) => memberGroupId === groupId)
+    .map(([key]) => key);
+
+  const tabSpaces = { ...state.tabSpaces };
+  for (const key of memberTabKeys) {
+    tabSpaces[key] = targetSpace.id;
+  }
+
+  return {
+    ...state,
+    tabSpaces,
+    spaces: state.spaces.map((space) => {
+      if (space.id === sourceSpace.id) {
+        return {
+          ...space,
+          groups: (space.groups ?? []).filter((g) => g.id !== groupId),
+        };
+      }
+      if (space.id === targetSpace.id) {
+        return { ...space, groups: [...(space.groups ?? []), movedGroup] };
+      }
+      return space;
+    }),
+  };
+}
+
 export function updateGroup(
   state: StoredStateV7,
   groupId: string,

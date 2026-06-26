@@ -112,6 +112,33 @@ export interface MoveTabToSpaceMessage {
   } & WindowScopedPayload;
 }
 
+/**
+ * Move a selection of live tabs and/or home pins to another space in one pass.
+ * Live tabs leave any (now cross-space) unpinned group; home pins keep their
+ * data but become loose in the destination.
+ */
+export interface MoveTabsToSpaceMessage {
+  action: 'MOVE_TABS_TO_SPACE';
+  payload: {
+    spaceId: string;
+    tabIds: number[];
+    homePinIds: string[];
+  } & WindowScopedPayload;
+}
+
+/**
+ * Move an entire folder to another space, carrying its members with it: a
+ * pinned folder's home pins, or an unpinned folder's live tabs. The folder
+ * stays intact in the destination space.
+ */
+export interface MoveGroupToSpaceMessage {
+  action: 'MOVE_GROUP_TO_SPACE';
+  payload: {
+    groupId: string;
+    spaceId: string;
+  } & WindowScopedPayload;
+}
+
 export interface ExportSpaceDataMessage {
   action: 'EXPORT_SPACE_DATA';
   payload: WindowScopedPayload;
@@ -292,6 +319,8 @@ export type RequestMessage =
   | GoHomeMessage
   | ReopenHomePinMessage
   | MoveTabToSpaceMessage
+  | MoveTabsToSpaceMessage
+  | MoveGroupToSpaceMessage
   | ExportSpaceDataMessage
   | ImportSpaceDataMessage
   | ResetSpaceDataMessage

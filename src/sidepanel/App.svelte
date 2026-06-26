@@ -640,7 +640,8 @@
   function folderContextMenuItems(group: PanelGroup): ContextMenuItem[] {
     const allOpen = group.tabs.every((tab) => tab.isOpen);
     const noneOpen = group.tabs.every((tab) => !tab.isOpen);
-    return [
+    const targetSpaces = otherSpaces();
+    const items: ContextMenuItem[] = [
       {
         type: 'action',
         label: 'Open All',
@@ -660,6 +661,14 @@
         onSelect: () => void renameFolder(group),
       },
     ];
+
+    if (targetSpaces.length > 0) {
+      items.push(
+        moveToSubmenu((spaceId) => void moveFolderToSpace(group.id, spaceId)),
+      );
+    }
+
+    return items;
   }
 
   // Deferred "Close all": hide the loose tabs now, start the restore window, and
@@ -923,6 +932,46 @@
     await sendMessage({ action: 'CLOSE_TABS', payload: { tabIds } });
   }
 
+  async function moveSelectedTabsToSpace(tabs: PanelTab[], spaceId: string) {
+    const tabIds = tabs
+      .filter((tab) => !tab.isHomePin && tab.tabId !== null)
+      .map((tab) => tab.tabId!);
+    const homePinIds = tabs
+      .filter((tab) => tab.isHomePin && tab.homePinId)
+      .map((tab) => tab.homePinId!);
+    if (tabIds.length === 0 && homePinIds.length === 0) return;
+    clearSelection();
+    await sendMessage({
+      action: 'MOVE_TABS_TO_SPACE',
+      payload: { spaceId, tabIds, homePinIds },
+    });
+  }
+
+  // Every space other than the one currently shown — the candidates a row,
+  // selection, or folder can be moved into.
+  function otherSpaces() {
+    return panelState.spaces.filter(
+      (space) => space.id !== panelState.activeSpaceId,
+    );
+  }
+
+  // Shared "Move to ›" submenu listing the other spaces; `onSelect` receives the
+  // chosen space id.
+  function moveToSubmenu(
+    onSelect: (spaceId: string) => void,
+  ): ContextMenuItem {
+    return {
+      type: 'submenu',
+      label: 'Move to',
+      items: otherSpaces().map((space) => ({
+        type: 'action',
+        label: space.name,
+        icon: space.icon,
+        onSelect: () => onSelect(space.id),
+      })),
+    };
+  }
+
   function bulkContextMenuItems(): ContextMenuItem[] {
     const tabs = selectedTabs();
     const pinnable = tabs.filter((tab) => !tab.isHomePin && tab.tabId !== null);
@@ -932,7 +981,9 @@
     );
     const groupablePins = tabs.filter((tab) => tab.isHomePin && tab.homePinId);
     const groupableCount = groupableTabs.length + groupablePins.length;
+    const movableCount = groupableCount;
     const closable = tabs.filter((tab) => tab.isOpen && tab.tabId !== null);
+    const targetSpaces = otherSpaces();
     const items: ContextMenuItem[] = [];
 
     if (pinnable.length > 0) {
@@ -963,6 +1014,12 @@
       });
     }
 
+    if (movableCount > 0 && targetSpaces.length > 0) {
+      items.push(
+        moveToSubmenu((spaceId) => void moveSelectedTabsToSpace(tabs, spaceId)),
+      );
+    }
+
     if (closable.length > 0) {
       if (items.length > 0) items.push({ type: 'separator' });
       items.push({
@@ -983,9 +1040,7 @@
 
     const items: ContextMenuItem[] = [];
     const copyTarget = tab.homeUrl ?? tab.url;
-    const targetSpaces = panelState.spaces.filter(
-      (space) => space.id !== panelState.activeSpaceId,
-    );
+    const targetSpaces = otherSpaces();
 
     if (copyTarget) {
       items.push({
@@ -1012,24 +1067,19 @@
     if (targetSpaces.length > 0 && (tab.homePinId || tab.tabId !== null)) {
       items.push({ type: 'separator' });
 
-      items.push({
-        type: 'submenu',
-        label: 'Move to',
-        items: targetSpaces.map((space) => ({
-          type: 'action',
-          label: space.name,
-          icon: space.icon,
-          onSelect: () =>
+      items.push(
+        moveToSubmenu(
+          (spaceId) =>
             void sendMessage({
               action: 'MOVE_TAB_TO_SPACE',
               payload: {
-                spaceId: space.id,
+                spaceId,
                 tabId: tab.tabId ?? undefined,
                 homePinId: tab.homePinId ?? undefined,
               },
             }),
-        })),
-      });
+        ),
+      );
     }
 
     if (!tab.isHomePin && tab.tabId !== null) {
@@ -1134,6 +1184,14 @@
     await sendMessage({
       action: 'CLOSE_GROUP',
       payload: { groupId },
+    });
+  }
+
+  async function moveFolderToSpace(groupId: string, spaceId: string) {
+    clearSelection();
+    await sendMessage({
+      action: 'MOVE_GROUP_TO_SPACE',
+      payload: { groupId, spaceId },
     });
   }
 

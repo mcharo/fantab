@@ -50,6 +50,7 @@ import {
   generateId,
   loadState,
   migrateTabId,
+  moveGroupToSpace,
   moveHomePinRelativeTo,
   moveHomePinToSpace,
   planUnpinnedReorder,
@@ -121,6 +122,8 @@ const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'GO_HOME',
   'REOPEN_HOME_PIN',
   'MOVE_TAB_TO_SPACE',
+  'MOVE_TABS_TO_SPACE',
+  'MOVE_GROUP_TO_SPACE',
   'EXPORT_SPACE_DATA',
   'IMPORT_SPACE_DATA',
   'RESET_SPACE_DATA',
@@ -1463,6 +1466,53 @@ async function handleMoveTabToSpace(
   return panelState;
 }
 
+async function handleMoveTabsToSpace(
+  payload: Extract<RequestMessage, { action: 'MOVE_TABS_TO_SPACE' }>['payload'],
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(payload.windowId);
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const activeSpaceId = getActiveSpace(state, resolvedWindowId).id;
+
+  for (const homePinId of payload.homePinIds) {
+    state = moveHomePinToSpace(state, homePinId, payload.spaceId);
+  }
+  for (const tabId of payload.tabIds) {
+    state = assignTabToSpace(state, tabId, payload.spaceId);
+  }
+
+  await saveState(state);
+  const panelState = await focusVisibleTabInSpace(
+    activeSpaceId,
+    resolvedWindowId,
+  );
+
+  await broadcastPanelState();
+  void broadcastLinkRoutingPolicies();
+
+  return panelState;
+}
+
+async function handleMoveGroupToSpace(
+  payload: Extract<RequestMessage, { action: 'MOVE_GROUP_TO_SPACE' }>['payload'],
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(payload.windowId);
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const activeSpaceId = getActiveSpace(state, resolvedWindowId).id;
+
+  state = moveGroupToSpace(state, payload.groupId, payload.spaceId);
+
+  await saveState(state);
+  const panelState = await focusVisibleTabInSpace(
+    activeSpaceId,
+    resolvedWindowId,
+  );
+
+  await broadcastPanelState();
+  void broadcastLinkRoutingPolicies();
+
+  return panelState;
+}
+
 async function handleExportSpaceData(): Promise<ExportSpaceDataResponse> {
   const allTabs = await chrome.tabs.query({});
   const state = await loadReconciledState(allTabs);
@@ -1707,6 +1757,10 @@ async function handleMessage(
       );
     case 'MOVE_TAB_TO_SPACE':
       return handleMoveTabToSpace(message.payload);
+    case 'MOVE_TABS_TO_SPACE':
+      return handleMoveTabsToSpace(message.payload);
+    case 'MOVE_GROUP_TO_SPACE':
+      return handleMoveGroupToSpace(message.payload);
     case 'EXPORT_SPACE_DATA':
       return handleExportSpaceData();
     case 'IMPORT_SPACE_DATA':
