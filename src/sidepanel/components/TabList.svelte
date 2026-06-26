@@ -7,6 +7,7 @@
     SpaceIcon,
   } from '../../types';
   import { dragState, type DragMember } from '../dragState';
+  import { readTabDragData } from '../dragPayload';
   import type { SectionEntry } from '../sectionOrder';
   import { visibleGroupTabs } from '../../lib/folderView';
   import CloseAllBar from './CloseAllBar.svelte';
@@ -49,6 +50,7 @@
     ) => void;
     onDropMembers: (groupId: string, members: GroupMembers) => void;
     onRemoveMembers: (members: GroupMembers) => void;
+    onDropExternal: (items: { url: string; alias?: string }[]) => void;
     onCloseGroup: (groupId: string) => void;
     onPinGroup: (groupId: string) => void;
     onUnpinGroup: (groupId: string) => void;
@@ -91,6 +93,7 @@
     onUpdateGroup,
     onDropMembers,
     onRemoveMembers,
+    onDropExternal,
     onCloseGroup,
     onPinGroup,
     onUnpinGroup,
@@ -172,16 +175,36 @@
     dragState.set(null);
   }
 
+  // Permit drops onto the list and, for drags from outside this fantab instance
+  // (another window/profile, or a page link), show a copy cursor.
+  function handleRootDragOver(event: DragEvent) {
+    event.preventDefault();
+    if (!event.dataTransfer) return;
+    event.dataTransfer.dropEffect = get(dragState) ? 'move' : 'copy';
+  }
+
   // Dropping a row (or a multi-selection) on empty list space pulls every
   // dragged member out of whatever folder it was in (loose rows and folder
-  // drags are ignored).
+  // drags are ignored). A drop with no local drag came from another fantab
+  // instance or a page — open its url(s) here instead.
   function handleRootDrop(event: DragEvent) {
     event.preventDefault();
     event.stopPropagation();
     const drag = get(dragState);
     folderDropTarget = null;
     dragState.set(null);
-    if (!drag || drag.ref.kind === 'folder') return;
+
+    if (!drag) {
+      const items = event.dataTransfer
+        ? readTabDragData(event.dataTransfer)
+        : [];
+      if (items.length > 0) {
+        onDropExternal(items.map((item) => ({ url: item.url, alias: item.title })));
+      }
+      return;
+    }
+
+    if (drag.ref.kind === 'folder') return;
 
     const members = drag.members ?? [
       { ref: drag.ref, sourceGroupId: drag.sourceGroupId },
@@ -255,7 +278,7 @@
 <div
   class="tab-list"
   role="presentation"
-  ondragover={(event) => event.preventDefault()}
+  ondragover={handleRootDragOver}
   ondrop={handleRootDrop}
 >
   {#if hasPinnedSection}

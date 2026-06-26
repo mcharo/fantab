@@ -13,6 +13,10 @@ export interface DragMember {
   ref: SectionUnitRef;
   /** The folder this row currently belongs to, or null when loose. */
   sourceGroupId: string | null;
+  /** The row's url, exported for cross-window/external drops. */
+  url: string;
+  /** A user-chosen rename, exported so a sibling fantab can apply it. */
+  title?: string;
 }
 
 export interface DragState {

@@ -11,7 +11,12 @@ import {
   buildPortableSpaceData,
   parsePortableSpaceData,
 } from './portableSpaceData';
-import { isAtHome, isSameSiteAsHomeUrl, normalizeHomeUrl } from './lib/url';
+import {
+  isAtHome,
+  isHttpUrl,
+  isSameSiteAsHomeUrl,
+  normalizeHomeUrl,
+} from './lib/url';
 import { visibleGroupTabs } from './lib/folderView';
 import {
   buildPanelState,
@@ -108,6 +113,7 @@ const BLANK_PAGE_PATH = 'blank.html';
 const REQUEST_ACTIONS = new Set<RequestMessage['action']>([
   'GET_PANEL_STATE',
   'CREATE_TAB',
+  'OPEN_URLS',
   'ACTIVATE_TAB',
   'CLOSE_TAB',
   'CLOSE_TABS',
@@ -744,6 +750,29 @@ async function handleCreateTab(
     await saveState(state);
   }
 
+  return getPanelState(resolvedWindowId);
+}
+
+// Open dropped urls as live tabs in the target window's active space. Used when
+// a tab is dragged in from another fantab instance (custom payload carries an
+// optional title) or a link is dropped from a page (url only).
+async function handleOpenUrls(
+  payload: Extract<RequestMessage, { action: 'OPEN_URLS' }>['payload'],
+): Promise<PanelState> {
+  const resolvedWindowId = await resolveWindowId(payload.windowId);
+  let state = await loadReconciledState(await chrome.tabs.query({}));
+  const activeSpaceId = getActiveSpace(state, resolvedWindowId).id;
+
+  for (const item of payload.items) {
+    if (!isHttpUrl(item.url)) continue;
+    const tab = await createTabInWindow(resolvedWindowId, item.url);
+    if (typeof tab.id !== 'number') continue;
+    state = assignTabToSpace(state, tab.id, activeSpaceId);
+    const alias = item.alias?.trim();
+    if (alias) state = renameTabAlias(state, tab.id, alias);
+  }
+
+  await saveState(state);
   return getPanelState(resolvedWindowId);
 }
 
@@ -1782,6 +1811,8 @@ async function handleMessage(
       return getPanelState(message.payload.windowId);
     case 'CREATE_TAB':
       return handleCreateTab(message.payload.windowId);
+    case 'OPEN_URLS':
+      return handleOpenUrls(message.payload);
     case 'ACTIVATE_TAB':
       await chrome.tabs.update(message.payload.tabId, { active: true });
       return getPanelState(message.payload.windowId);

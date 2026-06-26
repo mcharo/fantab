@@ -917,6 +917,8 @@
           ? { kind: 'pin', homePinId: tab.homePinId as string }
           : { kind: 'tab', tabId: tab.tabId as number },
         sourceGroupId: tab.groupId,
+        url: tab.url,
+        title: tab.alias ?? undefined,
       }),
     ),
   );
@@ -978,6 +980,13 @@
       action: 'MOVE_MEMBERS_TO_GROUP',
       payload: { groupId, tabIds, homePinIds },
     });
+  }
+
+  // Open tabs dragged in from another fantab instance (or links dropped from a
+  // page) as live tabs in this window's active space.
+  async function openExternalDrop(items: { url: string; alias?: string }[]) {
+    if (items.length === 0) return;
+    await sendMessage({ action: 'OPEN_URLS', payload: { items } });
   }
 
   async function removeMembersFromGroup(members: {
@@ -1574,6 +1583,7 @@
     onDropMembers={(groupId, members) =>
       moveMembersToGroup(groupId, members.tabIds, members.homePinIds)}
     onRemoveMembers={removeMembersFromGroup}
+    onDropExternal={openExternalDrop}
     onCloseGroup={closeGroup}
     onPinGroup={pinGroup}
     onUnpinGroup={unpinGroup}

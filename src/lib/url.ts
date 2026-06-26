@@ -32,6 +32,19 @@ function isSupportedWebUrl(url: URL): boolean {
 }
 
 /**
+ * Whether a string is a safe http(s) URL — used to vet URLs arriving from
+ * dropped drag payloads (which may originate from arbitrary pages) before
+ * opening them, so schemes like `javascript:` or `data:` are never launched.
+ */
+export function isHttpUrl(value: string): boolean {
+  try {
+    return isSupportedWebUrl(new URL(value));
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The registrable ("base") domain of a hostname — the part a user would
  * recognize as "the site" (e.g. `play.hbomax.com` -> `hbomax.com`,
  * `news.bbc.co.uk` -> `bbc.co.uk`). Uses a small public-suffix list to handle

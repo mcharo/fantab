@@ -3,6 +3,7 @@
   import { getFaviconUrl } from '../../lib/url';
   import type { PanelTab, SectionUnitRef } from '../../types';
   import { dragImageEl, dragState, type DragMember } from '../dragState';
+  import { setTabDragData, type DragTabPayload } from '../dragPayload';
   import Icon from './Icon.svelte';
   import InlineEdit from './InlineEdit.svelte';
 
@@ -134,9 +135,18 @@
       members: multi ? selectionMembers : undefined,
     });
     if (event.dataTransfer) {
-      // Some data is required for a valid drag; detection uses the store.
-      event.dataTransfer.setData('text/plain', tab.key);
-      event.dataTransfer.effectAllowed = 'move';
+      // Carry url(s) + any custom title so the drag can also drop into another
+      // fantab instance, another Chrome window, or a text field. In-app
+      // reorder/folder logic still uses the drag store, not this payload.
+      const exported: DragTabPayload[] = multi
+        ? selectionMembers.map((member) => ({
+            url: member.url,
+            title: member.title,
+          }))
+        : [{ url: tab.url, title: tab.alias ?? undefined }];
+      setTabDragData(event.dataTransfer, exported);
+      // Allow both an internal move and an external copy (open elsewhere).
+      event.dataTransfer.effectAllowed = 'all';
       // Multi-selection drags show a fanned stack rather than the single row.
       const stack = multi ? get(dragImageEl) : null;
       if (stack) event.dataTransfer.setDragImage(stack, 16, 16);

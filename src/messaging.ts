@@ -14,6 +14,18 @@ export interface CreateTabMessage {
   payload: WindowScopedPayload;
 }
 
+/**
+ * Open one or more urls as live tabs in the target window's active space,
+ * optionally applying a custom title (alias). Used when a fantab tab is dragged
+ * in from another fantab instance (or a link is dropped from a page).
+ */
+export interface OpenUrlsMessage {
+  action: 'OPEN_URLS';
+  payload: {
+    items: { url: string; alias?: string }[];
+  } & WindowScopedPayload;
+}
+
 export interface ActivateTabMessage {
   action: 'ACTIVATE_TAB';
   payload: { tabId: number } & WindowScopedPayload;
@@ -327,6 +339,7 @@ export interface ExportSpaceDataResponse {
 export type RequestMessage =
   | GetPanelStateMessage
   | CreateTabMessage
+  | OpenUrlsMessage
   | ActivateTabMessage
   | CloseTabMessage
   | CloseTabsMessage
