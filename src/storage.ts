@@ -1506,8 +1506,8 @@ export function addHomePinToGroup(
 
 /**
  * Convert a pinned group back into an unpinned group of its currently-open
- * tabs. Open member pins become loose live tabs in the group (membership +
- * preserved alias); closed pins are dropped. The group is left empty when no
+ * tabs. Open member pins become loose live tabs in the group (membership + any
+ * custom rename); closed pins are dropped. The group is left empty when no
  * member was open — {@link normalizeState} then prunes it.
  */
 export function unpinGroup(
@@ -1529,7 +1529,9 @@ export function unpinGroup(
     const key = tabKey(pin.tabId);
     tabSpaces[key] = space.id;
     tabGroupMembership[key] = groupId;
-    if (pin.alias) tabAliases[key] = pin.alias;
+    // Only a deliberate rename follows the tab; an auto-captured title would
+    // otherwise freeze the live tab's title (it stops tracking the page).
+    if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
   }
 
   const spaces = state.spaces.map((candidate) =>
@@ -1551,8 +1553,8 @@ export function unpinGroup(
 
 /**
  * Demote a single open home pin to a loose live tab in its space: the live tab
- * is kept (carrying the pin's alias) and the home pin record is dropped. A
- * no-op for a closed pin (no live tab to keep) or an unknown pin. Used when an
+ * is kept (carrying a custom rename, if any) and the home pin record is dropped.
+ * A no-op for a closed pin (no live tab to keep) or an unknown pin. Used when an
  * open home pin is moved into an unpinned (live-tab) folder.
  */
 export function demoteHomePinToTab(
@@ -1566,7 +1568,9 @@ export function demoteHomePinToTab(
 
   const key = tabKey(pin.tabId);
   const tabAliases = { ...state.tabAliases };
-  if (pin.alias) tabAliases[key] = pin.alias;
+  // Only a deliberate rename follows the tab; an auto-captured title would
+  // otherwise freeze the live tab's title (it stops tracking the page).
+  if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
 
   return {
     ...state,

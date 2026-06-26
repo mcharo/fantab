@@ -27,6 +27,15 @@ export interface HomePin {
   id: string;
   homeUrl: string;
   alias: string;
+  /**
+   * Whether {@link alias} is a user-chosen rename rather than the title captured
+   * automatically when the pin was created. Only a custom alias is carried over
+   * when a pin is converted back into a live tab (unpinning a folder, or moving
+   * an open pin into an unpinned folder) — otherwise the live tab keeps tracking
+   * its own title. Absent on pins created before this was tracked (treated as
+   * non-custom).
+   */
+  aliasCustom?: boolean;
   faviconUrl: string;
   tabId: number | null;
   lastKnownUrl: string | null;

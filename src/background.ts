@@ -567,6 +567,7 @@ function createHomePinFromTab(
     id: generateId(),
     homeUrl: tabUrl(tab),
     alias: tabTitle(tab),
+    aliasCustom: false,
     faviconUrl: tab.favIconUrl ?? '',
     tabId: tab.id ?? null,
     lastKnownUrl: tabUrl(tab),
@@ -857,7 +858,12 @@ async function handleRenameTabAlias(
   const activeSpaceId = getActiveSpace(state, payload.windowId).id;
 
   if (payload.homePinId) {
-    state = updateHomePin(state, payload.homePinId, { alias }, activeSpaceId);
+    state = updateHomePin(
+      state,
+      payload.homePinId,
+      { alias, aliasCustom: true },
+      activeSpaceId,
+    );
   } else if (typeof payload.tabId === 'number') {
     state = renameTabAlias(state, payload.tabId, alias);
   }

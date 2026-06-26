@@ -33,6 +33,7 @@ import {
   switchSpace,
   unpinGroup,
   updateGroup,
+  updateHomePin,
   updateSpaceDetails,
 } from './storage';
 import { DEFAULT_SPACE_ID, type StoredStateV7 } from './types';
@@ -69,6 +70,7 @@ const baseState: StoredStateV7 = {
           id: 'pin-1',
           homeUrl: 'https://mail.example.com/',
           alias: 'Mail',
+          aliasCustom: true,
           faviconUrl: '',
           tabId: 1,
           lastKnownUrl: 'https://mail.example.com/',
@@ -1059,8 +1061,8 @@ describe('fantab tab groups', () => {
 });
 
 describe('demoteHomePinToTab', () => {
-  it('turns an open home pin into a loose live tab, keeping its alias', () => {
-    // pin-1 is open (tabId 1) with alias "Mail".
+  it('turns an open home pin into a loose live tab, keeping a custom rename', () => {
+    // pin-1 is open (tabId 1) with a custom alias "Mail".
     const demoted = demoteHomePinToTab(baseState, 'pin-1', DEFAULT_SPACE_ID);
 
     expect(
@@ -1068,6 +1070,19 @@ describe('demoteHomePinToTab', () => {
     ).toBeUndefined();
     expect(demoted.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
     expect(demoted.tabAliases['1']).toBe('Mail');
+  });
+
+  it('does not freeze the title for a non-custom (auto-captured) alias', () => {
+    // A pin whose alias is just the captured page title (never renamed) must not
+    // leave a sticky tab alias, so the live tab keeps tracking its own title.
+    const autoState = {
+      ...updateHomePin(baseState, 'pin-1', { aliasCustom: false }),
+      tabAliases: {},
+    };
+    const demoted = demoteHomePinToTab(autoState, 'pin-1', DEFAULT_SPACE_ID);
+
+    expect(demoted.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
+    expect(demoted.tabAliases['1']).toBeUndefined();
   });
 
   it('is a no-op for a closed home pin (no live tab to keep)', () => {
