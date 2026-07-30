@@ -1,14 +1,21 @@
+import {
+  isEligibleVideo,
+  rejectVideoReason,
+  type VideoCandidate,
+} from './mediaEligibility';
 import type { MediaStateChangedMessage } from './messaging';
 import type { TabMediaState } from './types';
 import type { VideoMirrorSignal } from './videoMirror';
 
 (() => {
   const CONTENT_SCRIPT_GLOBAL = '__fantabContentScript';
+  const MEDIA_DEBUG_GLOBAL = '__fantabMediaDebug';
   interface ContentScriptHandle {
     teardown: () => void;
   }
   const globalScope = window as typeof window & {
     [CONTENT_SCRIPT_GLOBAL]?: ContentScriptHandle;
+    [MEDIA_DEBUG_GLOBAL]?: () => VideoDiagnostic[];
   };
 
   // A prior instance can still be live on this page: orphaned after an
@@ -400,11 +407,120 @@ import type { VideoMirrorSignal } from './videoMirror';
     return !el.paused && !el.ended && el.readyState >= 2;
   }
 
-  function mediaElements(): HTMLMediaElement[] {
-    return [
-      ...document.querySelectorAll('video'),
-      ...document.querySelectorAll('audio'),
-    ] as HTMLMediaElement[];
+  function videoElements(): HTMLVideoElement[] {
+    return [...document.querySelectorAll('video')];
+  }
+
+  function audioElements(): HTMLAudioElement[] {
+    return [...document.querySelectorAll('audio')];
+  }
+
+  // Snapshot a <video> for the eligibility rules in ./mediaEligibility, which
+  // filter out hover previews, decorative loops, and hidden or tiny players.
+  function describeVideo(video: HTMLVideoElement): VideoCandidate {
+    const rect = video.getBoundingClientRect();
+    const style = window.getComputedStyle(video);
+    const decodedAudioBytes =
+      (video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
+        .webkitAudioDecodedByteCount ?? 0;
+
+    return {
+      readyState: video.readyState,
+      videoWidth: video.videoWidth,
+      videoHeight: video.videoHeight,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      hidden:
+        style.display === 'none' ||
+        style.visibility === 'hidden' ||
+        Number(style.opacity) === 0,
+      duration: video.duration,
+      muted: video.muted,
+      loop: video.loop,
+      disablePictureInPicture: video.disablePictureInPicture,
+      hasAudioBytes: decodedAudioBytes > 0,
+    };
+  }
+
+  function eligibleVideos(): HTMLVideoElement[] {
+    return videoElements().filter((video) =>
+      isEligibleVideo(describeVideo(video)),
+    );
+  }
+
+  // --- Detection diagnostics -------------------------------------------------
+  // Opt-in (Settings > "Log video detection"): dumps what every <video> on the
+  // page looks like and which rule rejected it, so the thresholds in
+  // ./mediaEligibility can be tuned against sites that misbehave. Logs land in
+  // the page's own console. Also reachable as __fantabMediaDebug() once DevTools
+  // is switched to the extension's isolated world.
+  //
+  // Mirror of PREFERENCES_KEY in src/preferences.ts. Kept inline so the content
+  // script stays a self-contained bundle. Update both copies together.
+  const PREFERENCES_KEY = 'fantab_preferences';
+
+  interface VideoDiagnostic extends VideoCandidate {
+    src: string;
+    paused: boolean;
+    ended: boolean;
+    rejectedBy: string;
+  }
+
+  let mediaDebugEnabled = false;
+
+  function videoDiagnostics(): VideoDiagnostic[] {
+    return videoElements().map((video) => {
+      const candidate = describeVideo(video);
+      return {
+        ...candidate,
+        src: video.currentSrc || video.src || '(none)',
+        paused: video.paused,
+        ended: video.ended,
+        rejectedBy: rejectVideoReason(candidate) ?? 'eligible',
+      };
+    });
+  }
+
+  function logMediaDiagnostics(): void {
+    if (!mediaDebugEnabled) return;
+
+    const rows = videoDiagnostics();
+    if (rows.length === 0) return;
+
+    console.groupCollapsed(
+      `[fantab] video detection (${rows.length} element${rows.length === 1 ? '' : 's'})`,
+    );
+    console.table(rows);
+    console.groupEnd();
+  }
+
+  function applyDebugPreference(stored: unknown): void {
+    mediaDebugEnabled =
+      (stored as { mediaDebugLogging?: unknown } | undefined)
+        ?.mediaDebugLogging === true;
+  }
+
+  function handleStorageChanged(
+    changes: Record<string, chrome.storage.StorageChange>,
+    areaName: string,
+  ): void {
+    if (areaName !== 'local' || !(PREFERENCES_KEY in changes)) return;
+    applyDebugPreference(changes[PREFERENCES_KEY].newValue);
+  }
+
+  function refreshDebugPreference(): void {
+    if (!extensionContextValid()) return;
+
+    try {
+      void chrome.storage.local
+        .get(PREFERENCES_KEY)
+        .then((stored) => applyDebugPreference(stored[PREFERENCES_KEY]))
+        .catch(() => {
+          // Storage unavailable; leave logging off.
+        });
+    } catch {
+      extensionContextValid();
+    }
   }
 
   function renderedArea(el: HTMLMediaElement): number {
@@ -418,8 +534,7 @@ import type { VideoMirrorSignal } from './videoMirror';
   // The element the volume/mute controls act on: the largest playing media
   // element (videos rank above audio by rendered area), falling back to the
   // largest ready one. Mirrors the picture-in-picture target selection.
-  function primaryMediaElement(): HTMLMediaElement | null {
-    const elements = mediaElements();
+  function primaryMediaElement(elements: HTMLMediaElement[]): HTMLMediaElement | null {
     const ready = elements.filter((el) => el.readyState >= 2);
     const playing = ready.filter((el) => !el.paused && !el.ended);
     const pool = playing.length > 0 ? playing : ready;
@@ -428,14 +543,10 @@ import type { VideoMirrorSignal } from './videoMirror';
   }
 
   function buildMediaState(): TabMediaState {
-    const elements = mediaElements();
-    const videos = elements.filter(
-      (el): el is HTMLVideoElement => el instanceof HTMLVideoElement,
-    );
-    const hasVideo = videos.some(
-      (video) => video.readyState >= 2 && video.videoWidth > 0,
-    );
-    const primary = primaryMediaElement();
+    const videos = eligibleVideos();
+    const elements: HTMLMediaElement[] = [...videos, ...audioElements()];
+    const hasVideo = videos.length > 0;
+    const primary = primaryMediaElement(elements);
     const snapshot = bridgeSnapshot;
 
     const domPlaying = elements.some(isPlayingMediaEl);
@@ -460,6 +571,8 @@ import type { VideoMirrorSignal } from './videoMirror';
 
   function reportMediaState(): void {
     if (!extensionContextValid()) return;
+
+    logMediaDiagnostics();
 
     const state = buildMediaState();
     const serialized = JSON.stringify(state);
@@ -556,12 +669,9 @@ import type { VideoMirrorSignal } from './videoMirror';
   }
 
   function primaryVideoElement(): HTMLVideoElement | null {
-    const videos = [...document.querySelectorAll('video')] as HTMLVideoElement[];
-    const ready = videos.filter(
-      (video) => video.readyState >= 2 && video.videoWidth > 0,
-    );
-    const playing = ready.filter((video) => !video.paused && !video.ended);
-    const pool = playing.length > 0 ? playing : ready;
+    const videos = eligibleVideos();
+    const playing = videos.filter((video) => !video.paused && !video.ended);
+    const pool = playing.length > 0 ? playing : videos;
     if (pool.length === 0) return null;
     return [...pool].sort((a, b) => renderedArea(b) - renderedArea(a))[0];
   }
@@ -685,6 +795,7 @@ import type { VideoMirrorSignal } from './videoMirror';
     window.removeEventListener('message', handleBridgeMessage);
     document.removeEventListener('visibilitychange', handleVisibilityChange);
     chrome.runtime.onConnect.removeListener(handleMirrorConnect);
+    chrome.storage.onChanged.removeListener(handleStorageChanged);
     stopVideoMirror();
     for (const type of MEDIA_EVENTS) {
       document.removeEventListener(type, handleMediaEvent, true);
@@ -693,6 +804,7 @@ import type { VideoMirrorSignal } from './videoMirror';
       window.clearTimeout(mediaReportTimer);
       mediaReportTimer = null;
     }
+    delete globalScope[MEDIA_DEBUG_GLOBAL];
   }
 
   function handleClick(event: MouseEvent): void {
@@ -758,12 +870,15 @@ import type { VideoMirrorSignal } from './videoMirror';
   window.addEventListener('message', handleBridgeMessage);
   document.addEventListener('visibilitychange', handleVisibilityChange);
   chrome.runtime.onConnect.addListener(handleMirrorConnect);
+  chrome.storage.onChanged.addListener(handleStorageChanged);
   for (const type of MEDIA_EVENTS) {
     document.addEventListener(type, handleMediaEvent, true);
   }
 
   globalScope[CONTENT_SCRIPT_GLOBAL] = { teardown };
+  globalScope[MEDIA_DEBUG_GLOBAL] = videoDiagnostics;
 
   void refreshPolicy();
+  refreshDebugPreference();
   scheduleMediaReport();
 })();

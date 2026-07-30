@@ -100,6 +100,7 @@
   );
   let enableVideoPreview = $state(DEFAULT_PREFERENCES.enableVideoPreview);
   let showPlayerControls = $state(DEFAULT_PREFERENCES.showPlayerControls);
+  let mediaDebugLogging = $state(DEFAULT_PREFERENCES.mediaDebugLogging);
 
   const filteredHomePins = $derived(
     panelState.homePins.filter((tab) => tabMatchesQuery(tab, searchQuery)),
@@ -308,9 +309,42 @@
         return area > 0 ? area : video.videoWidth * video.videoHeight;
       };
 
-      const videos = Array.from(document.querySelectorAll('video'));
-      const ready = videos.filter(
-        (video) => video.readyState >= 2 && video.videoWidth > 0,
+      // Compact mirror of rejectVideoReason in src/mediaEligibility.ts, minus
+      // the disablePictureInPicture rule (cleared below for the chosen target).
+      // Keep the thresholds in sync; this function is serialized into the page
+      // so it can't import the shared module.
+      const isEligible = (video: HTMLVideoElement): boolean => {
+        if (video.readyState < 2) return false;
+        if (video.videoWidth <= 0 || video.videoHeight <= 0) return false;
+
+        const rect = video.getBoundingClientRect();
+        if (rect.width < 200 || rect.height < 120) return false;
+
+        const style = window.getComputedStyle(video);
+        if (
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          Number(style.opacity) === 0
+        ) {
+          return false;
+        }
+
+        const decodedAudioBytes =
+          (video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
+            .webkitAudioDecodedByteCount ?? 0;
+        const isShort =
+          Number.isFinite(video.duration) &&
+          video.duration > 0 &&
+          video.duration <= 12;
+        return !(
+          video.muted &&
+          decodedAudioBytes === 0 &&
+          (video.loop || isShort)
+        );
+      };
+
+      const ready = Array.from(document.querySelectorAll('video')).filter(
+        isEligible,
       );
       const playing = ready.filter((video) => !video.paused && !video.ended);
       const target = (playing.length > 0 ? playing : ready).sort(
@@ -749,6 +783,7 @@
       closeAllHoldToConfirm,
       enableVideoPreview,
       showPlayerControls,
+      mediaDebugLogging,
     });
   }
 
@@ -784,6 +819,11 @@
 
   function setEnableVideoPreview(next: boolean) {
     enableVideoPreview = next;
+    persistPreferences();
+  }
+
+  function setMediaDebugLogging(next: boolean) {
+    mediaDebugLogging = next;
     persistPreferences();
   }
 
@@ -888,6 +928,7 @@
       closeAllHoldToConfirm = DEFAULT_PREFERENCES.closeAllHoldToConfirm;
       enableVideoPreview = DEFAULT_PREFERENCES.enableVideoPreview;
       showPlayerControls = DEFAULT_PREFERENCES.showPlayerControls;
+      mediaDebugLogging = DEFAULT_PREFERENCES.mediaDebugLogging;
       await savePreferences(DEFAULT_PREFERENCES);
 
       settingsStatus = 'Reset to defaults';
@@ -1517,6 +1558,7 @@
       closeAllHoldToConfirm = prefs.closeAllHoldToConfirm;
       enableVideoPreview = prefs.enableVideoPreview;
       showPlayerControls = prefs.showPlayerControls;
+      mediaDebugLogging = prefs.mediaDebugLogging;
     });
 
     const onMessage = (message: BroadcastMessage) => {
@@ -1658,6 +1700,7 @@
       {closeAllHoldToConfirm}
       {enableVideoPreview}
       {showPlayerControls}
+      {mediaDebugLogging}
       onClose={() => (settingsOpen = false)}
       onExport={exportSpaceData}
       onImport={importSpaceData}
@@ -1670,6 +1713,7 @@
       onCloseAllHoldToConfirmChange={setCloseAllHoldToConfirm}
       onEnableVideoPreviewChange={setEnableVideoPreview}
       onShowPlayerControlsChange={setShowPlayerControls}
+      onMediaDebugLoggingChange={setMediaDebugLogging}
       onEditShortcuts={openKeyboardShortcuts}
     />
   {/if}

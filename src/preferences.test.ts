@@ -84,6 +84,7 @@ describe('normalizePreferences', () => {
       closeAllHoldToConfirm: true,
       enableVideoPreview: false,
       showPlayerControls: true,
+      mediaDebugLogging: false,
     });
   });
 
@@ -127,6 +128,12 @@ describe('normalizePreferences', () => {
     expect(normalizePreferences({ showPlayerControls: 'no' }).showPlayerControls).toBe(true);
     expect(normalizePreferences({ showPlayerControls: false }).showPlayerControls).toBe(false);
   });
+
+  it('defaults media debug logging off and keeps explicit booleans', () => {
+    expect(normalizePreferences({}).mediaDebugLogging).toBe(false);
+    expect(normalizePreferences({ mediaDebugLogging: 'yes' }).mediaDebugLogging).toBe(false);
+    expect(normalizePreferences({ mediaDebugLogging: true }).mediaDebugLogging).toBe(true);
+  });
 });
 
 describe('loadPreferences / savePreferences', () => {
@@ -149,6 +156,7 @@ describe('loadPreferences / savePreferences', () => {
       closeAllHoldToConfirm: true,
       enableVideoPreview: false,
       showPlayerControls: true,
+      mediaDebugLogging: false,
     });
     expect(get).toHaveBeenCalledWith(PREFERENCES_KEY);
   });
@@ -176,6 +184,7 @@ describe('loadPreferences / savePreferences', () => {
       closeAllHoldToConfirm: false,
       enableVideoPreview: true,
       showPlayerControls: false,
+      mediaDebugLogging: true,
     });
 
     expect(set).toHaveBeenCalledWith({
@@ -188,6 +197,7 @@ describe('loadPreferences / savePreferences', () => {
         closeAllHoldToConfirm: false,
         enableVideoPreview: true,
         showPlayerControls: false,
+        mediaDebugLogging: true,
       },
     });
   });

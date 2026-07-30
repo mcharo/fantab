@@ -52,12 +52,19 @@ export interface Preferences {
    * Machine-local (not synced).
    */
   showPlayerControls: boolean;
+  /**
+   * Logs every `<video>` a page exposes, and why each one was accepted or
+   * rejected as a real player, to that page's console. For tuning the detection
+   * thresholds against sites that misbehave. Machine-local (not synced).
+   */
+  mediaDebugLogging: boolean;
 }
 
 export const DEFAULT_SYNC_ENABLED = false;
 export const DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM = true;
 export const DEFAULT_ENABLE_VIDEO_PREVIEW = false;
 export const DEFAULT_SHOW_PLAYER_CONTROLS = true;
+export const DEFAULT_MEDIA_DEBUG_LOGGING = false;
 
 export const DEFAULT_PREFERENCES: Preferences = {
   tabTitleFontSize: DEFAULT_TAB_TITLE_FONT_SIZE,
@@ -68,6 +75,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   closeAllHoldToConfirm: DEFAULT_CLOSE_ALL_HOLD_TO_CONFIRM,
   enableVideoPreview: DEFAULT_ENABLE_VIDEO_PREVIEW,
   showPlayerControls: DEFAULT_SHOW_PLAYER_CONTROLS,
+  mediaDebugLogging: DEFAULT_MEDIA_DEBUG_LOGGING,
 };
 
 export function clampTabTitleFontSize(value: unknown): number {
@@ -131,6 +139,10 @@ export function normalizePreferences(value: unknown): Preferences {
       typeof candidate.showPlayerControls === 'boolean'
         ? candidate.showPlayerControls
         : DEFAULT_SHOW_PLAYER_CONTROLS,
+    mediaDebugLogging:
+      typeof candidate.mediaDebugLogging === 'boolean'
+        ? candidate.mediaDebugLogging
+        : DEFAULT_MEDIA_DEBUG_LOGGING,
   };
 }
 

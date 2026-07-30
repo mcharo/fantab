@@ -23,6 +23,7 @@
     closeAllHoldToConfirm: boolean;
     enableVideoPreview: boolean;
     showPlayerControls: boolean;
+    mediaDebugLogging: boolean;
     onClose: () => void;
     onExport: () => void;
     onImport: (file: File) => void;
@@ -35,6 +36,7 @@
     onCloseAllHoldToConfirmChange: (hold: boolean) => void;
     onEnableVideoPreviewChange: (enabled: boolean) => void;
     onShowPlayerControlsChange: (enabled: boolean) => void;
+    onMediaDebugLoggingChange: (enabled: boolean) => void;
     onEditShortcuts: () => void;
   }
 
@@ -50,6 +52,7 @@
     closeAllHoldToConfirm,
     enableVideoPreview,
     showPlayerControls,
+    mediaDebugLogging,
     onClose,
     onExport,
     onImport,
@@ -62,6 +65,7 @@
     onCloseAllHoldToConfirmChange,
     onEnableVideoPreviewChange,
     onShowPlayerControlsChange,
+    onMediaDebugLoggingChange,
     onEditShortcuts,
   }: Props = $props();
 
@@ -291,6 +295,29 @@
           disabled={!showPlayerControls}
           onchange={(event) =>
             onEnableVideoPreviewChange(
+              (event.currentTarget as HTMLInputElement).checked,
+            )}
+        />
+      </label>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <span class="toggle-title">
+            Log video detection
+            <span class="tag">Debug</span>
+          </span>
+          <span class="toggle-hint">
+            Print every video a page exposes, and why it was accepted or
+            rejected, to that page's console.
+          </span>
+        </span>
+        <input
+          class="toggle"
+          type="checkbox"
+          role="switch"
+          checked={mediaDebugLogging}
+          onchange={(event) =>
+            onMediaDebugLoggingChange(
               (event.currentTarget as HTMLInputElement).checked,
             )}
         />

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
+
   import type { ActiveMedia } from '../../types';
   import Icon from './Icon.svelte';
   import VideoMirror from './VideoMirror.svelte';
@@ -31,6 +33,13 @@
   let showVideo = $state(false);
   let videoTransitionKey = $state(0);
 
+  // A report can briefly drop hasVideo mid-stream (ad transitions, a player
+  // swapping its <video>), and unmounting the mirror on that would kill a live
+  // stream for good. Latch it for as long as we're pointed at the same tab.
+  let latchedVideoTabId = $state<number | null>(null);
+  let latchedHasVideo = $state(false);
+  const canShowVideo = $derived(media.hasVideo || latchedHasVideo);
+
   // While dragging the slider, show the local value so incoming reports (which
   // echo our own volume writes back) don't fight the drag.
   let dragging = $state(false);
@@ -45,6 +54,18 @@
 
   $effect(() => {
     if (!enableVideoPreview && showVideo) showVideo = false;
+  });
+
+  $effect(() => {
+    const { tabId, hasVideo } = media;
+    untrack(() => {
+      if (tabId !== latchedVideoTabId) {
+        latchedVideoTabId = tabId;
+        latchedHasVideo = hasVideo;
+        return;
+      }
+      if (hasVideo) latchedHasVideo = true;
+    });
   });
 
   function handleVolumeInput(event: Event) {
@@ -62,8 +83,15 @@
     onSetVolume(media.volume, !media.muted);
   }
 
+  function toggleVideo() {
+    showVideo = !showVideo;
+    // Hiding drops the latch, so re-enabling later starts from what the tab
+    // actually reports rather than a stale "it had video once".
+    if (!showVideo) latchedHasVideo = media.hasVideo;
+  }
+
   function handlePlayPause() {
-    if (!showVideo || !media.hasVideo) {
+    if (!showVideo || !canShowVideo) {
       onPlayPause();
       return;
     }
@@ -74,7 +102,7 @@
 </script>
 
 <section class="player-bar" aria-label="Media controls">
-  {#if enableVideoPreview && showVideo && media.hasVideo}
+  {#if enableVideoPreview && showVideo && canShowVideo}
     <VideoMirror tabId={media.tabId} transitionKey={videoTransitionKey} />
   {/if}
 
@@ -97,19 +125,21 @@
       </span>
     </button>
 
+    <!-- The preview toggle follows the latch so it stays available to switch a
+         mirror off after the page's video is really gone. -->
+    {#if enableVideoPreview && canShowVideo}
+      <button
+        class="ctrl-btn"
+        class:active={showVideo}
+        onclick={toggleVideo}
+        title={showVideo ? 'Hide video' : 'Show video'}
+        aria-label={showVideo ? 'Hide video' : 'Show video'}
+        aria-pressed={showVideo}
+      >
+        <Icon name={showVideo ? 'video-off' : 'video'} size={16} />
+      </button>
+    {/if}
     {#if media.hasVideo}
-      {#if enableVideoPreview}
-        <button
-          class="ctrl-btn"
-          class:active={showVideo}
-          onclick={() => (showVideo = !showVideo)}
-          title={showVideo ? 'Hide video' : 'Show video'}
-          aria-label={showVideo ? 'Hide video' : 'Show video'}
-          aria-pressed={showVideo}
-        >
-          <Icon name={showVideo ? 'video-off' : 'video'} size={16} />
-        </button>
-      {/if}
       <button
         class="ctrl-btn"
         onclick={onTogglePiP}

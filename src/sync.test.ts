@@ -536,6 +536,7 @@ describe('mergeSyncedPreferences', () => {
       closeAllHoldToConfirm: false,
       enableVideoPreview: true,
       showPlayerControls: false,
+      mediaDebugLogging: true,
     };
     const payload = projectSyncable(baseState(), {
       ...DEFAULT_PREFERENCES,
@@ -554,6 +555,7 @@ describe('mergeSyncedPreferences', () => {
       closeAllHoldToConfirm: false,
       enableVideoPreview: true,
       showPlayerControls: false,
+      mediaDebugLogging: true,
     });
   });
 });

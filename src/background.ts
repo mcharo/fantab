@@ -318,21 +318,34 @@ async function getPanelState(
 // favicon and a display label (MediaSession title, else alias, else tab title).
 // Skips (and prunes) records whose tab no longer exists, which can happen if a
 // tab closed while the worker was asleep so onRemoved never ran.
+//
+// The resolved tab is remembered so the selection stays put across refreshes
+// (see pickActiveMediaTabId); the foreground tab is passed in as the hand-off
+// signal.
 function resolveActiveMedia(
   tabs: chrome.tabs.Tab[],
   state: StoredStateV8,
   windowId: number | null,
 ): ActiveMedia | null {
-  let pruned = false;
+  let dirty = false;
+
+  const activeTab = tabs.find(
+    (candidate) =>
+      candidate.active && (windowId === null || candidate.windowId === windowId),
+  );
 
   while (true) {
-    const tabId = pickActiveMediaTabId(mediaRegistry.getRecords(), windowId);
+    const tabId = pickActiveMediaTabId(mediaRegistry.getRecords(), windowId, {
+      currentTabId: mediaRegistry.getSelection(windowId),
+      activeTabId: activeTab?.id ?? null,
+    });
     if (tabId === null) break;
 
     const record = mediaRegistry.get(tabId);
     const tab = tabs.find((candidate) => candidate.id === tabId);
     if (record && tab) {
-      if (pruned) persistMediaRegistry();
+      dirty = mediaRegistry.select(windowId, tabId) || dirty;
+      if (dirty) persistMediaRegistry();
       const alias = state.tabAliases[String(tabId)] ?? '';
       const fallbackTitle = alias || tab.title || 'Playing media';
       return buildActiveMedia(
@@ -344,10 +357,11 @@ function resolveActiveMedia(
     }
 
     mediaRegistry.remove(tabId);
-    pruned = true;
+    dirty = true;
   }
 
-  if (pruned) persistMediaRegistry();
+  dirty = mediaRegistry.select(windowId, null) || dirty;
+  if (dirty) persistMediaRegistry();
   return null;
 }
 

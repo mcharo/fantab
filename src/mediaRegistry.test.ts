@@ -91,6 +91,100 @@ describe('pickActiveMediaTabId', () => {
 
     expect(pickActiveMediaTabId(records, null)).toBe(1);
   });
+
+  it('keeps the current tab when a background tab starts playing', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+      [2, record({ seq: 9, state: mediaState({ isPlaying: true }) })],
+    ]);
+
+    expect(pickActiveMediaTabId(records, 1, { currentTabId: 1 })).toBe(1);
+  });
+
+  it('keeps a paused current tab while nothing else is playing', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 1, state: mediaState({ isPlaying: false }) })],
+      [2, record({ seq: 9, state: mediaState({ isPlaying: false }) })],
+    ]);
+
+    expect(pickActiveMediaTabId(records, 1, { currentTabId: 1 })).toBe(1);
+  });
+
+  it('yields from a paused current tab to a playing one', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 9, state: mediaState({ isPlaying: false }) })],
+      [2, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+    ]);
+
+    expect(pickActiveMediaTabId(records, 1, { currentTabId: 1 })).toBe(2);
+  });
+
+  it('hands off to the foreground tab when it plays unmuted', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 9, state: mediaState({ isPlaying: true }) })],
+      [2, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+    ]);
+
+    expect(
+      pickActiveMediaTabId(records, 1, { currentTabId: 1, activeTabId: 2 }),
+    ).toBe(2);
+  });
+
+  it('ignores a foreground tab autoplaying muted', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+      [
+        2,
+        record({ seq: 9, state: mediaState({ isPlaying: true, muted: true }) }),
+      ],
+    ]);
+
+    expect(
+      pickActiveMediaTabId(records, 1, { currentTabId: 1, activeTabId: 2 }),
+    ).toBe(1);
+  });
+
+  it('ignores a foreground tab playing at zero volume', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+      [
+        2,
+        record({ seq: 9, state: mediaState({ isPlaying: true, volume: 0 }) }),
+      ],
+    ]);
+
+    expect(
+      pickActiveMediaTabId(records, 1, { currentTabId: 1, activeTabId: 2 }),
+    ).toBe(1);
+  });
+
+  it('ignores a foreground tab that is merely paused with media', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ seq: 1, state: mediaState({ isPlaying: true }) })],
+      [2, record({ seq: 9, state: mediaState({ isPlaying: false }) })],
+    ]);
+
+    expect(
+      pickActiveMediaTabId(records, 1, { currentTabId: 1, activeTabId: 2 }),
+    ).toBe(1);
+  });
+
+  it('falls back to the usual rules when the current tab is gone', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [2, record({ seq: 9, state: mediaState({ isPlaying: true }) })],
+    ]);
+
+    expect(pickActiveMediaTabId(records, 1, { currentTabId: 1 })).toBe(2);
+  });
+
+  it('ignores a current tab from another window', () => {
+    const records = new Map<number, MediaTabRecord>([
+      [1, record({ windowId: 2, seq: 9, state: mediaState({ isPlaying: true }) })],
+      [2, record({ windowId: 1, seq: 1, state: mediaState({ isPlaying: true }) })],
+    ]);
+
+    expect(pickActiveMediaTabId(records, 1, { currentTabId: 1 })).toBe(2);
+  });
 });
 
 describe('MediaRegistry', () => {
@@ -134,6 +228,32 @@ describe('MediaRegistry', () => {
     expect(registry.update(1, 1, mediaState({ volume: 0.5 }))).toBe(true);
   });
 
+  it('remembers a selection per window and reports only real changes', () => {
+    const registry = new MediaRegistry();
+
+    expect(registry.getSelection(1)).toBeNull();
+    expect(registry.select(1, 7)).toBe(true);
+    expect(registry.select(1, 7)).toBe(false);
+    expect(registry.getSelection(1)).toBe(7);
+    // Windows keep independent selections, including the "all windows" key.
+    expect(registry.getSelection(2)).toBeNull();
+    registry.select(null, 9);
+    expect(registry.getSelection(null)).toBe(9);
+
+    expect(registry.select(1, null)).toBe(true);
+    expect(registry.getSelection(1)).toBeNull();
+  });
+
+  it('drops a selection when its tab is removed', () => {
+    const registry = new MediaRegistry();
+    registry.update(7, 1, mediaState({ isPlaying: true }));
+    registry.select(1, 7);
+
+    registry.remove(7);
+
+    expect(registry.getSelection(1)).toBeNull();
+  });
+
   it('exposes tabs with a currently-playing video for the row buttons', () => {
     const registry = new MediaRegistry();
     registry.update(1, 1, mediaState({ isPlayingVideo: true }));
@@ -157,6 +277,17 @@ describe('MediaRegistry serialize/hydrate', () => {
       pickActiveMediaTabId(source.getRecords(), 1),
     );
     expect(restored.get(1)?.state.isPlaying).toBe(true);
+  });
+
+  it('round-trips the remembered player-bar selection', () => {
+    const source = new MediaRegistry();
+    source.update(1, 1, mediaState({ isPlaying: true }));
+    source.select(1, 1);
+
+    const restored = new MediaRegistry();
+    restored.hydrate(source.serialize());
+
+    expect(restored.getSelection(1)).toBe(1);
   });
 
   it('continues the recency sequence after hydrating, so new plays win', () => {
