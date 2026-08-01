@@ -13,7 +13,7 @@ import {
   type HomePin,
   type Space,
   type SpaceIcon,
-  type StoredStateV7,
+  type StoredStateV8,
 } from './types';
 
 /**
@@ -127,7 +127,7 @@ function chunkKey(index: number): string {
  * {@link hashPayload}).
  */
 export function projectSyncable(
-  state: StoredStateV7,
+  state: StoredStateV8,
   preferences: Preferences,
 ): SyncPayload {
   const spaces = [...state.spaces]
@@ -304,8 +304,8 @@ export async function readSync(): Promise<{
 /**
  * Applies a synced payload onto the local state (whole-payload last-write-wins).
  * Logical space/pin/folder data is replaced by the payload, while machine-local
- * fields are preserved across the merge by id: pins keep their live `tabId` and
- * `faviconUrl`; pinned folders keep their `collapsed`/`peek` view state; and
+ * fields are preserved across the merge by id: pins keep their live `instances`
+ * and `faviconUrl`; pinned folders keep their `collapsed`/`peek` view state; and
  * each space's unpinned folders (whose members are live tabs) are kept as-is.
  *
  * A pre–folder-sync payload omits `groups`/`groupId` entirely; that case falls
@@ -315,9 +315,9 @@ export async function readSync(): Promise<{
  * follow with `reconcileStateForTabs` to re-bind live tabs.
  */
 export function mergeSyncIntoState(
-  localState: StoredStateV7,
+  localState: StoredStateV8,
   payload: SyncPayload,
-): StoredStateV7 {
+): StoredStateV8 {
   const localPinById = new Map<string, HomePin>();
   for (const space of localState.spaces) {
     for (const pin of space.homePins) {
@@ -383,7 +383,7 @@ export function mergeSyncIntoState(
               homeUrl: syncPin.homeUrl,
               alias: syncPin.alias || syncPin.homeUrl,
               faviconUrl: local?.faviconUrl ?? '',
-              tabId: local?.tabId ?? null,
+              instances: local?.instances ?? [],
               lastKnownUrl: syncPin.lastKnownUrl ?? null,
               lastKnownTitle: syncPin.lastKnownTitle ?? null,
               createdAt: numberOr(syncPin.createdAt, Date.now()),

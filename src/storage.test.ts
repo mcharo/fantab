@@ -8,8 +8,12 @@ import {
   deleteSpace,
   demoteHomePinToTab,
   findGroupById,
+  findHomePinByTabId,
+  getHomePinInstanceByTabId,
+  getHomePinInstanceForWindow,
+  getHomePinTabIds,
   getRememberedActiveTabId,
-  isStoredStateV7,
+  isStoredStateV8,
   loadState,
   moveGroup,
   moveGroupToSpace,
@@ -23,6 +27,8 @@ import {
   reattachHomePinsToRestoredTabs,
   reconcileStateForTabs,
   removeGroup,
+  removeHomePin,
+  removeHomePinInstanceByTabId,
   removeTabFromGroup,
   renameSpace,
   renameTabAlias,
@@ -35,8 +41,9 @@ import {
   updateGroup,
   updateHomePin,
   updateSpaceDetails,
+  upsertHomePinInstance,
 } from './storage';
-import { DEFAULT_SPACE_ID, type StoredStateV7 } from './types';
+import { DEFAULT_SPACE_ID, type StoredStateV8 } from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   return {
@@ -51,8 +58,8 @@ function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   } as chrome.tabs.Tab;
 }
 
-const baseState: StoredStateV7 = {
-  version: 7,
+const baseState: StoredStateV8 = {
+  version: 8,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -72,7 +79,14 @@ const baseState: StoredStateV7 = {
           alias: 'Mail',
           aliasCustom: true,
           faviconUrl: '',
-          tabId: 1,
+          instances: [
+            {
+              tabId: 1,
+              windowId: 1,
+              lastKnownUrl: 'https://mail.example.com/',
+              lastKnownTitle: 'Inbox',
+            },
+          ],
           lastKnownUrl: 'https://mail.example.com/',
           lastKnownTitle: 'Inbox',
           createdAt: 1,
@@ -83,7 +97,7 @@ const baseState: StoredStateV7 = {
           homeUrl: 'https://calendar.example.com/',
           alias: 'Calendar',
           faviconUrl: '',
-          tabId: null,
+          instances: [],
           lastKnownUrl: null,
           lastKnownTitle: null,
           createdAt: 2,
@@ -102,13 +116,13 @@ const baseState: StoredStateV7 = {
   },
 };
 
-describe('v7 storage state', () => {
+describe('v8 storage state', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });
 
   it('rejects old state and loadState returns an empty default space', async () => {
-    expect(isStoredStateV7({ version: 2, homePins: [], tabAliases: {} })).toBe(
+    expect(isStoredStateV8({ version: 2, homePins: [], tabAliases: {} })).toBe(
       false,
     );
 
@@ -124,7 +138,7 @@ describe('v7 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(7);
+    expect(state.version).toBe(8);
     expect(state.activeSpaceByWindowId.default).toBe(DEFAULT_SPACE_ID);
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabAliases).toEqual({});
@@ -167,7 +181,7 @@ describe('v7 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(7);
+    expect(state.version).toBe(8);
     expect(state.activeSpaceByWindowId.default).toBe('focus');
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
@@ -213,7 +227,7 @@ describe('v7 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(7);
+    expect(state.version).toBe(8);
     expect(state.activeSpaceByWindowId['1']).toBe('focus');
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
@@ -241,7 +255,7 @@ describe('v7 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(7);
+    expect(state.version).toBe(8);
     expect(state.spaces[0].homePins).toHaveLength(2);
     expect(state.lastActiveTabBySpace).toEqual({});
     expect(state.tabSpaces).toEqual({});
@@ -276,21 +290,187 @@ describe('v7 storage state', () => {
     });
 
     const state = await loadState();
-    expect(state.version).toBe(7);
+    expect(state.version).toBe(8);
     expect(state.spaces[0].groups).toEqual([]);
     expect(state.tabGroupMembership).toEqual({});
   });
 
-  it('normalizes existing v7 state that predates active-tab memory', async () => {
-    const storedState = {
+  it('migrates v7 home pin bindings into v8 instances', async () => {
+    const legacyV7State = {
+      ...baseState,
       version: 7,
+      spaces: baseState.spaces.map((space) => ({
+        ...space,
+        homePins: space.homePins.map((pin) => {
+          const { instances, ...logicalPin } = pin;
+          return {
+            ...logicalPin,
+            tabId: instances[0]?.tabId ?? null,
+          };
+        }),
+      })),
+    };
+
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn().mockResolvedValue({ fantab_state: legacyV7State }),
+          set: vi.fn(),
+        },
+      },
+    });
+
+    const state = await loadState();
+
+    expect(state.version).toBe(8);
+    expect(state.spaces[0].homePins[0]).toMatchObject({
+      instances: [
+        {
+          tabId: 1,
+          windowId: null,
+          lastKnownUrl: 'https://mail.example.com/',
+          lastKnownTitle: 'Inbox',
+        },
+      ],
+    });
+    expect(state.spaces[0].homePins[1]).toMatchObject({ instances: [] });
+  });
+
+  it('converts legacy pin bindings consistently from v3 through v6', async () => {
+    const legacySpace = {
+      ...baseState.spaces[0],
+      homePins: baseState.spaces[0].homePins.map((pin) => {
+        const { instances, ...logicalPin } = pin;
+        return { ...logicalPin, tabId: instances[0]?.tabId ?? null };
+      }),
+    };
+    const legacyStates = [
+      {
+        version: 3,
+        activeSpaceId: DEFAULT_SPACE_ID,
+        spaces: [legacySpace],
+        tabAliases: {},
+      },
+      {
+        version: 4,
+        activeSpaceByWindowId: baseState.activeSpaceByWindowId,
+        spaces: [legacySpace],
+        tabAliases: {},
+      },
+      {
+        version: 5,
+        activeSpaceByWindowId: baseState.activeSpaceByWindowId,
+        spaces: [legacySpace],
+        tabAliases: {},
+      },
+      {
+        version: 6,
+        activeSpaceByWindowId: baseState.activeSpaceByWindowId,
+        lastActiveTabBySpace: {},
+        spaces: [legacySpace],
+        tabAliases: {},
+        tabSpaces: {},
+      },
+    ];
+
+    for (const legacyState of legacyStates) {
+      vi.stubGlobal('chrome', {
+        storage: {
+          local: {
+            get: vi.fn().mockResolvedValue({ fantab_state: legacyState }),
+            set: vi.fn(),
+          },
+        },
+      });
+
+      const state = await loadState();
+      expect(state.spaces[0].homePins[0].instances).toEqual([
+        {
+          tabId: 1,
+          windowId: null,
+          lastKnownUrl: 'https://mail.example.com/',
+          lastKnownTitle: 'Inbox',
+        },
+      ]);
+      expect(state.spaces[0].homePins[1].instances).toEqual([]);
+    }
+  });
+
+  it('normalizes invalid and duplicate instance records deterministically', () => {
+    const normalized = normalizeState({
+      ...baseState,
+      spaces: [
+        {
+          ...baseState.spaces[0],
+          homePins: [
+            {
+              ...baseState.spaces[0].homePins[0],
+              instances: [
+                baseState.spaces[0].homePins[0].instances[0],
+                {
+                  tabId: 1,
+                  windowId: 2,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+                {
+                  tabId: 2,
+                  windowId: 1,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+                {
+                  tabId: Number.NaN,
+                  windowId: 3,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+                {
+                  tabId: 3,
+                  windowId: null,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+                {
+                  tabId: 4,
+                  windowId: null,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+              ],
+            },
+            {
+              ...baseState.spaces[0].homePins[1],
+              instances: [
+                {
+                  tabId: 3,
+                  windowId: 4,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(normalized.spaces[0].homePins[0].instances.map((item) => item.tabId)).toEqual([
+      1, 3, 4,
+    ]);
+    expect(normalized.spaces[0].homePins[1].instances).toEqual([]);
+  });
+
+  it('normalizes existing v8 state that predates active-tab memory', async () => {
+    const storedState = {
+      version: 8,
       activeSpaceByWindowId: baseState.activeSpaceByWindowId,
       spaces: baseState.spaces,
       tabAliases: {},
       tabSpaces: {},
     };
 
-    expect(isStoredStateV7(storedState)).toBe(true);
+    expect(isStoredStateV8(storedState)).toBe(true);
 
     vi.stubGlobal('chrome', {
       storage: {
@@ -330,7 +510,14 @@ describe('v7 storage state', () => {
     });
     expect(reconciled.tabSpaces).toEqual({ '1': DEFAULT_SPACE_ID });
     expect(reconciled.spaces[0].homePins[0]).toMatchObject({
-      tabId: 1,
+      instances: [
+        {
+          tabId: 1,
+          windowId: 1,
+          lastKnownUrl: 'https://mail.example.com/inbox',
+          lastKnownTitle: 'Inbox updated',
+        },
+      ],
       faviconUrl: 'mail.ico',
       lastKnownUrl: 'https://mail.example.com/inbox',
       lastKnownTitle: 'Inbox updated',
@@ -353,7 +540,14 @@ describe('v7 storage state', () => {
               {
                 ...baseState.spaces[0].homePins[0],
                 id: 'focus-pin',
-                tabId: 42,
+                instances: [
+                  {
+                    tabId: 42,
+                    windowId: 2,
+                    lastKnownUrl: 'https://mail.example.com/',
+                    lastKnownTitle: 'Inbox',
+                  },
+                ],
               },
             ],
           },
@@ -362,8 +556,8 @@ describe('v7 storage state', () => {
       [],
     );
 
-    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
-    expect(reconciled.spaces[1].homePins[0].tabId).toBeNull();
+    expect(reconciled.spaces[0].homePins[0].instances).toEqual([]);
+    expect(reconciled.spaces[1].homePins[0].instances).toEqual([]);
     expect(reconciled.tabAliases).toEqual({});
     expect(reconciled.tabSpaces).toEqual({});
   });
@@ -413,7 +607,7 @@ describe('v7 storage state', () => {
   });
 
   it('moves a home pin before/after a target pin', () => {
-    const order = (state: StoredStateV7) =>
+    const order = (state: StoredStateV8) =>
       [...state.spaces[0].homePins]
         .sort((a, b) => a.order - b.order)
         .map((pin) => pin.id);
@@ -448,7 +642,7 @@ describe('v7 storage state', () => {
                 homeUrl: 'https://notes.example.com/',
                 alias: 'Notes',
                 faviconUrl: '',
-                tabId: null,
+                instances: [],
                 lastKnownUrl: null,
                 lastKnownTitle: null,
                 createdAt: 3,
@@ -574,14 +768,174 @@ describe('v7 storage state', () => {
   });
 });
 
+describe('home pin instances', () => {
+  const secondInstance = {
+    tabId: 2,
+    windowId: 2,
+    lastKnownUrl: 'https://mail.example.com/sent',
+    lastKnownTitle: 'Sent',
+  };
+
+  function twoWindowState(): StoredStateV8 {
+    return {
+      ...updateHomePin(baseState, 'pin-1', {
+        instances: [
+          baseState.spaces[0].homePins[0].instances[0],
+          secondInstance,
+        ],
+      }),
+      tabSpaces: {
+        ...baseState.tabSpaces,
+        '2': DEFAULT_SPACE_ID,
+      },
+    };
+  }
+
+  it('looks up, upserts, and removes one instance without disturbing another', () => {
+    const initialPin = baseState.spaces[0].homePins[0];
+    expect(getHomePinInstanceForWindow(initialPin, 1)?.tabId).toBe(1);
+    expect(getHomePinInstanceByTabId(initialPin, 1)?.windowId).toBe(1);
+    expect(getHomePinTabIds(initialPin)).toEqual([1]);
+    expect(findHomePinByTabId(baseState, 1)?.id).toBe('pin-1');
+
+    const withSecond = upsertHomePinInstance(
+      baseState,
+      'pin-1',
+      secondInstance,
+    );
+    expect(getHomePinTabIds(withSecond.spaces[0].homePins[0])).toEqual([1, 2]);
+
+    const replacedInWindowTwo = upsertHomePinInstance(
+      withSecond,
+      'pin-1',
+      { ...secondInstance, tabId: 3 },
+    );
+    expect(getHomePinTabIds(replacedInWindowTwo.spaces[0].homePins[0])).toEqual([
+      1, 3,
+    ]);
+
+    const removed = removeHomePinInstanceByTabId(replacedInWindowTwo, 1);
+    expect(getHomePinTabIds(removed.spaces[0].homePins[0])).toEqual([3]);
+  });
+
+  it('keeps surviving windows pinned when another instance closes', () => {
+    const reconciled = reconcileStateForTabs(twoWindowState(), [
+      tab({
+        id: 2,
+        windowId: 2,
+        url: 'https://mail.example.com/sent',
+        title: 'Sent',
+      }),
+    ]);
+
+    expect(reconciled.spaces[0].homePins[0].instances).toEqual([
+      secondInstance,
+    ]);
+    expect(reconciled.tabSpaces['2']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('corrects every live instance to its pin space during reconciliation', () => {
+    const state = {
+      ...twoWindowState(),
+      spaces: [
+        ...twoWindowState().spaces,
+        {
+          id: 'focus',
+          name: 'Focus',
+          icon: 'diamond' as const,
+          homePins: [],
+          createdAt: 2,
+          order: 1,
+        },
+      ],
+      tabSpaces: {
+        ...twoWindowState().tabSpaces,
+        '1': 'focus',
+        '2': 'focus',
+      },
+    };
+    const reconciled = reconcileStateForTabs(state, [
+      tab({ id: 1, windowId: 1 }),
+      tab({ id: 2, windowId: 2 }),
+    ]);
+
+    expect(reconciled.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
+    expect(reconciled.tabSpaces['2']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('preserves missing instances only during the startup reattach window', () => {
+    const preserved = reconcileStateForTabs(twoWindowState(), [], true);
+    expect(getHomePinTabIds(preserved.spaces[0].homePins[0])).toEqual([1, 2]);
+
+    const pruned = reconcileStateForTabs(twoWindowState(), [], false);
+    expect(pruned.spaces[0].homePins[0].instances).toEqual([]);
+  });
+
+  it('repairs a same-window conflict by keeping the most recently accessed tab', () => {
+    const conflicted = updateHomePin(baseState, 'pin-1', {
+      instances: [
+        baseState.spaces[0].homePins[0].instances[0],
+        { ...secondInstance, windowId: 1 },
+      ],
+    });
+    const reconciled = reconcileStateForTabs(conflicted, [
+      tab({ id: 1, windowId: 1, lastAccessed: 10 }),
+      tab({ id: 2, windowId: 1, lastAccessed: 20 }),
+    ]);
+
+    expect(getHomePinTabIds(reconciled.spaces[0].homePins[0])).toEqual([2]);
+    expect(reconciled.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
+    expect(reconciled.tabSpaces['2']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('moves every live instance with its logical pin', () => {
+    const withSpace = createSpace(twoWindowState(), 'Focus');
+    const targetSpaceId = withSpace.spaces[1].id;
+    const moved = moveHomePinToSpace(withSpace, 'pin-1', targetSpaceId);
+
+    expect(moved.tabSpaces['1']).toBe(targetSpaceId);
+    expect(moved.tabSpaces['2']).toBe(targetSpaceId);
+  });
+
+  it('keeps an explicitly moved tab when its destination window has an instance', () => {
+    const state = twoWindowState();
+    const movedInstance = {
+      ...state.spaces[0].homePins[0].instances[0],
+      windowId: 2,
+    };
+    const moved = upsertHomePinInstance(
+      state,
+      'pin-1',
+      movedInstance,
+      DEFAULT_SPACE_ID,
+    );
+
+    expect(moved.spaces[0].homePins[0].instances).toEqual([movedInstance]);
+    // The displaced tab stays assigned to the space as an ordinary loose tab.
+    expect(moved.tabSpaces['2']).toBe(DEFAULT_SPACE_ID);
+  });
+
+  it('removes a logical pin while leaving all instance tabs loose', () => {
+    const removed = removeHomePin(
+      twoWindowState(),
+      'pin-1',
+      DEFAULT_SPACE_ID,
+    );
+
+    expect(removed.spaces[0].homePins.map((pin) => pin.id)).toEqual(['pin-2']);
+    expect(removed.tabSpaces['1']).toBe(DEFAULT_SPACE_ID);
+    expect(removed.tabSpaces['2']).toBe(DEFAULT_SPACE_ID);
+  });
+});
+
 describe('reattachHomePinsToRestoredTabs', () => {
   // A pin whose tab disappeared (e.g. after a Chrome restart), plus matching
   // helpers, kept independent of `baseState` so tests never mutate it.
   function lostPinState(
-    overrides: Partial<StoredStateV7['spaces'][number]['homePins'][number]> = {},
-  ): StoredStateV7 {
+    overrides: Partial<StoredStateV8['spaces'][number]['homePins'][number]> = {},
+  ): StoredStateV8 {
     return {
-      version: 7,
+      version: 8,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -599,7 +953,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://mail.example.com/',
               alias: 'Mail',
               faviconUrl: '',
-              tabId: 1, // stale id from the previous session
+              instances: [
+                {
+                  tabId: 1, // stale id from the previous session
+                  windowId: 1,
+                  lastKnownUrl: 'https://mail.example.com/inbox',
+                  lastKnownTitle: 'Inbox',
+                },
+              ],
               lastKnownUrl: 'https://mail.example.com/inbox',
               lastKnownTitle: 'Inbox',
               createdAt: 1,
@@ -624,7 +985,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
     ]);
 
     expect(result.spaces[0].homePins[0]).toMatchObject({
-      tabId: 1000,
+      instances: [
+        {
+          tabId: 1000,
+          windowId: 1,
+          lastKnownUrl: 'https://mail.example.com/inbox',
+          lastKnownTitle: 'Inbox updated',
+        },
+      ],
       faviconUrl: 'mail.ico',
       lastKnownUrl: 'https://mail.example.com/inbox',
       lastKnownTitle: 'Inbox updated',
@@ -632,15 +1000,55 @@ describe('reattachHomePinsToRestoredTabs', () => {
     expect(result.tabSpaces['1000']).toBe(DEFAULT_SPACE_ID);
   });
 
+  it('reattaches restored instances independently in two windows', () => {
+    const state = lostPinState({
+      instances: [
+        {
+          tabId: 1,
+          windowId: 1,
+          lastKnownUrl: 'https://mail.example.com/inbox',
+          lastKnownTitle: 'Inbox',
+        },
+        {
+          tabId: 2,
+          windowId: 2,
+          lastKnownUrl: 'https://mail.example.com/sent',
+          lastKnownTitle: 'Sent',
+        },
+      ],
+    });
+    const result = reattachHomePinsToRestoredTabs(state, [
+      tab({
+        id: 1000,
+        windowId: 1,
+        url: 'https://mail.example.com/inbox',
+      }),
+      tab({
+        id: 2000,
+        windowId: 2,
+        url: 'https://mail.example.com/sent',
+      }),
+    ]);
+
+    expect(result.spaces[0].homePins[0].instances).toMatchObject([
+      { tabId: 1000, windowId: 1 },
+      { tabId: 2000, windowId: 2 },
+    ]);
+    expect(result.tabSpaces).toMatchObject({
+      '1000': DEFAULT_SPACE_ID,
+      '2000': DEFAULT_SPACE_ID,
+    });
+  });
+
   it('reconcile alone does not rebind a closed pin to a newly opened tab', () => {
     // Regression: normal browsing must not claim a deliberately opened tab whose
     // URL happens to match a closed pin (e.g. cmd+t -> a pinned site's URL).
-    const state = lostPinState({ tabId: null });
+    const state = lostPinState({ instances: [] });
     const reconciled = reconcileStateForTabs(state, [
       tab({ id: 1000, url: 'https://mail.example.com/inbox', windowId: 1 }),
     ]);
 
-    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+    expect(reconciled.spaces[0].homePins[0].instances).toEqual([]);
     // The new tab is a normal tab in its window's active space, not the pin.
     expect(reconciled.tabSpaces['1000']).toBe(DEFAULT_SPACE_ID);
   });
@@ -650,20 +1058,40 @@ describe('reattachHomePinsToRestoredTabs', () => {
       tab({ id: 1000, pendingUrl: 'https://mail.example.com/inbox' }),
     ]);
 
-    expect(result.spaces[0].homePins[0].tabId).toBe(1000);
+    expect(result.spaces[0].homePins[0].instances[0].tabId).toBe(1000);
   });
 
   it('falls back to homeUrl when lastKnownUrl does not match', () => {
     const result = reattachHomePinsToRestoredTabs(
-      lostPinState({ lastKnownUrl: 'https://mail.example.com/sent' }),
+      lostPinState({
+        lastKnownUrl: 'https://mail.example.com/sent',
+        instances: [
+          {
+            tabId: 1,
+            windowId: 1,
+            lastKnownUrl: 'https://mail.example.com/sent',
+            lastKnownTitle: 'Sent',
+          },
+        ],
+      }),
       [tab({ id: 1000, url: 'https://mail.example.com/' })],
     );
 
-    expect(result.spaces[0].homePins[0].tabId).toBe(1000);
+    expect(result.spaces[0].homePins[0].instances[0].tabId).toBe(1000);
   });
 
   it('does not rebind on a same-domain tab with a different path (exact only)', () => {
-    const state = lostPinState({ lastKnownUrl: null });
+    const state = lostPinState({
+      lastKnownUrl: null,
+      instances: [
+        {
+          tabId: 1,
+          windowId: 1,
+          lastKnownUrl: null,
+          lastKnownTitle: 'Inbox',
+        },
+      ],
+    });
     const result = reattachHomePinsToRestoredTabs(state, [
       tab({ id: 1000, url: 'https://mail.example.com/some/other/path' }),
     ]);
@@ -673,19 +1101,19 @@ describe('reattachHomePinsToRestoredTabs', () => {
     const reconciled = reconcileStateForTabs(state, [
       tab({ id: 1000, url: 'https://mail.example.com/some/other/path' }),
     ]);
-    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+    expect(reconciled.spaces[0].homePins[0].instances).toEqual([]);
   });
 
   it('leaves a pin closed when no live tab matches', () => {
     const reconciled = reconcileStateForTabs(lostPinState(), [
       tab({ id: 1000, url: 'https://unrelated.example.org/' }),
     ]);
-    expect(reconciled.spaces[0].homePins[0].tabId).toBeNull();
+    expect(reconciled.spaces[0].homePins[0].instances).toEqual([]);
   });
 
   it('never reuses a tab already held by another live pin', () => {
-    const state: StoredStateV7 = {
-      ...lostPinState({ id: 'lost', tabId: null }),
+    const state: StoredStateV8 = {
+      ...lostPinState({ id: 'lost', instances: [] }),
       spaces: [
         {
           id: DEFAULT_SPACE_ID,
@@ -699,7 +1127,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://mail.example.com/',
               alias: 'Mail (open)',
               faviconUrl: '',
-              tabId: 1000,
+              instances: [
+                {
+                  tabId: 1000,
+                  windowId: 1,
+                  lastKnownUrl: 'https://mail.example.com/inbox',
+                  lastKnownTitle: 'Inbox',
+                },
+              ],
               lastKnownUrl: 'https://mail.example.com/inbox',
               lastKnownTitle: 'Inbox',
               createdAt: 1,
@@ -710,7 +1145,7 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://mail.example.com/',
               alias: 'Mail (lost)',
               faviconUrl: '',
-              tabId: null,
+              instances: [],
               lastKnownUrl: 'https://mail.example.com/inbox',
               lastKnownTitle: 'Inbox',
               createdAt: 2,
@@ -729,8 +1164,8 @@ describe('reattachHomePinsToRestoredTabs', () => {
   });
 
   it('moves a rebound tab into the pin’s own space, not the active space', () => {
-    const state: StoredStateV7 = {
-      version: 7,
+    const state: StoredStateV8 = {
+      version: 8,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -758,7 +1193,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://notes.example.com/',
               alias: 'Notes',
               faviconUrl: '',
-              tabId: 7, // stale
+              instances: [
+                {
+                  tabId: 7, // stale
+                  windowId: 1,
+                  lastKnownUrl: 'https://notes.example.com/today',
+                  lastKnownTitle: 'Today',
+                },
+              ],
               lastKnownUrl: 'https://notes.example.com/today',
               lastKnownTitle: 'Today',
               createdAt: 2,
@@ -773,13 +1215,13 @@ describe('reattachHomePinsToRestoredTabs', () => {
       tab({ id: 1000, url: 'https://notes.example.com/today' }),
     ]);
 
-    expect(result.spaces[1].homePins[0].tabId).toBe(1000);
+    expect(result.spaces[1].homePins[0].instances[0].tabId).toBe(1000);
     expect(result.tabSpaces['1000']).toBe('focus');
   });
 
   it('prefers a lastKnownUrl match over another pin’s homeUrl match', () => {
-    const state: StoredStateV7 = {
-      version: 7,
+    const state: StoredStateV8 = {
+      version: 8,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID },
       lastActiveTabBySpace: {},
       tabAliases: {},
@@ -797,7 +1239,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://site.com/page',
               alias: 'Home only',
               faviconUrl: '',
-              tabId: null,
+              instances: [
+                {
+                  tabId: 1,
+                  windowId: 1,
+                  lastKnownUrl: null,
+                  lastKnownTitle: null,
+                },
+              ],
               lastKnownUrl: null,
               lastKnownTitle: null,
               createdAt: 1,
@@ -808,7 +1257,14 @@ describe('reattachHomePinsToRestoredTabs', () => {
               homeUrl: 'https://site.com/',
               alias: 'Last known',
               faviconUrl: '',
-              tabId: null,
+              instances: [
+                {
+                  tabId: 2,
+                  windowId: 1,
+                  lastKnownUrl: 'https://site.com/page',
+                  lastKnownTitle: 'Page',
+                },
+              ],
               lastKnownUrl: 'https://site.com/page',
               lastKnownTitle: 'Page',
               createdAt: 2,
@@ -824,10 +1280,15 @@ describe('reattachHomePinsToRestoredTabs', () => {
     ]);
 
     const byId = Object.fromEntries(
-      result.spaces[0].homePins.map((pin) => [pin.id, pin.tabId]),
+      result.spaces[0].homePins.map((pin) => [
+        pin.id,
+        pin.instances[0]?.tabId ?? null,
+      ]),
     );
     expect(byId['last-known']).toBe(1000);
-    expect(byId['home-only']).toBeNull();
+    // Reattach itself preserves unmatched stale metadata for partial session
+    // restore; a later ordinary reconcile prunes it after the startup window.
+    expect(byId['home-only']).toBe(1);
   });
 });
 
@@ -906,7 +1367,7 @@ describe('fantab tab groups', () => {
     const folder = createGroup(baseState, { title: 'F', pinned: true });
     const withMember = addHomePinToGroup(folder.state, 'pin-1', folder.groupId);
 
-    const order = (state: StoredStateV7) =>
+    const order = (state: StoredStateV8) =>
       [...state.spaces[0].homePins]
         .sort((a, b) => a.order - b.order)
         .map((pin) => pin.id);
@@ -1016,6 +1477,46 @@ describe('fantab tab groups', () => {
     expect(unpinned.spaces[0].homePins).toHaveLength(0);
   });
 
+  it('unpins every window instance into the resulting live group', () => {
+    const withSecondInstance = {
+      ...updateHomePin(baseState, 'pin-1', {
+        instances: [
+          ...baseState.spaces[0].homePins[0].instances,
+          {
+            tabId: 2,
+            windowId: 2,
+            lastKnownUrl: 'https://mail.example.com/sent',
+            lastKnownTitle: 'Sent',
+          },
+        ],
+      }),
+      tabSpaces: {
+        ...baseState.tabSpaces,
+        '2': DEFAULT_SPACE_ID,
+      },
+    };
+    const created = createGroup(
+      withSecondInstance,
+      { title: 'Mail', pinned: true },
+      DEFAULT_SPACE_ID,
+    );
+    const grouped = setHomePinGroup(
+      created.state,
+      'pin-1',
+      created.groupId,
+      DEFAULT_SPACE_ID,
+    );
+    const unpinned = unpinGroup(grouped, created.groupId);
+
+    expect(unpinned.tabGroupMembership).toMatchObject({
+      '1': created.groupId,
+      '2': created.groupId,
+    });
+    expect(unpinned.spaces[0].homePins.some((pin) => pin.id === 'pin-1')).toBe(
+      false,
+    );
+  });
+
   it('drops dead unpinned-group membership when reconciling against live tabs', () => {
     const created = createGroup(
       baseState,
@@ -1100,14 +1601,14 @@ describe('demoteHomePinToTab', () => {
 });
 
 describe('moveGroupToSpace', () => {
-  function withSecondSpace(): { state: StoredStateV7; secondSpaceId: string } {
+  function withSecondSpace(): { state: StoredStateV8; secondSpaceId: string } {
     const state = createSpace(baseState, 'Work', 1);
     const secondSpaceId = state.spaces[state.spaces.length - 1].id;
     return { state, secondSpaceId };
   }
 
   function spaceHoldingGroup(
-    state: StoredStateV7,
+    state: StoredStateV8,
     groupId: string,
   ): string | undefined {
     return state.spaces.find((space) =>
@@ -1205,13 +1706,13 @@ describe('migrateTabId', () => {
   // new id (chrome.tabs.onReplaced). Every id-keyed binding must follow the tab
   // to its new id so it stays in its own space rather than reconcile pruning the
   // old id and re-parking the new one as a loose tab in the active space.
-  function discardableState(): StoredStateV7 {
+  function discardableState(): StoredStateV8 {
     return {
-      version: 7,
+      version: 8,
       activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '1': 'focus' },
       lastActiveTabBySpace: { [`1:${DEFAULT_SPACE_ID}`]: 7 },
       tabAliases: { '7': 'Mail alias' },
-      tabSpaces: { '7': DEFAULT_SPACE_ID, '8': 'focus' },
+      tabSpaces: { '7': DEFAULT_SPACE_ID, '8': 'focus', '9': DEFAULT_SPACE_ID },
       tabGroupMembership: { '8': 'group-1' },
       spaces: [
         {
@@ -1226,7 +1727,20 @@ describe('migrateTabId', () => {
               homeUrl: 'https://mail.example.com/',
               alias: 'Mail',
               faviconUrl: '',
-              tabId: 7,
+              instances: [
+                {
+                  tabId: 7,
+                  windowId: 1,
+                  lastKnownUrl: 'https://mail.example.com/inbox',
+                  lastKnownTitle: 'Inbox',
+                },
+                {
+                  tabId: 9,
+                  windowId: 2,
+                  lastKnownUrl: 'https://mail.example.com/sent',
+                  lastKnownTitle: 'Sent',
+                },
+              ],
               lastKnownUrl: 'https://mail.example.com/inbox',
               lastKnownTitle: 'Inbox',
               createdAt: 1,
@@ -1260,7 +1774,8 @@ describe('migrateTabId', () => {
   it('moves a home pin binding and space assignment to the new tab id', () => {
     const migrated = migrateTabId(discardableState(), 7, 100);
 
-    expect(migrated.spaces[0].homePins[0].tabId).toBe(100);
+    expect(migrated.spaces[0].homePins[0].instances[0].tabId).toBe(100);
+    expect(migrated.spaces[0].homePins[0].instances[1].tabId).toBe(9);
     expect(migrated.tabSpaces['100']).toBe(DEFAULT_SPACE_ID);
     expect(migrated.tabSpaces['7']).toBeUndefined();
     expect(migrated.tabAliases['100']).toBe('Mail alias');
@@ -1286,7 +1801,7 @@ describe('migrateTabId', () => {
       tab({ id: 8, url: 'https://work.example.com/', windowId: 1 }),
     ]);
 
-    expect(reconciled.spaces[0].homePins[0].tabId).toBe(100);
+    expect(reconciled.spaces[0].homePins[0].instances[0].tabId).toBe(100);
     expect(reconciled.tabSpaces['100']).toBe(DEFAULT_SPACE_ID);
   });
 

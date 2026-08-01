@@ -20,7 +20,7 @@ import {
   DEFAULT_SPACE_ID,
   type FantabGroup,
   type HomePin,
-  type StoredStateV7,
+  type StoredStateV8,
 } from './types';
 
 function pin(overrides: Partial<HomePin>): HomePin {
@@ -29,7 +29,7 @@ function pin(overrides: Partial<HomePin>): HomePin {
     homeUrl: 'https://example.com/',
     alias: 'Example',
     faviconUrl: 'https://example.com/favicon.ico',
-    tabId: null,
+    instances: [],
     lastKnownUrl: 'https://example.com/',
     lastKnownTitle: 'Example',
     createdAt: 1,
@@ -51,9 +51,9 @@ function group(overrides: Partial<FantabGroup>): FantabGroup {
   };
 }
 
-function baseState(): StoredStateV7 {
+function baseState(): StoredStateV8 {
   return {
-    version: 7,
+    version: 8,
     activeSpaceByWindowId: { default: DEFAULT_SPACE_ID, '7': DEFAULT_SPACE_ID },
     lastActiveTabBySpace: { '7:default': 42 },
     spaces: [
@@ -64,7 +64,19 @@ function baseState(): StoredStateV7 {
         createdAt: 1,
         order: 0,
         homePins: [
-          pin({ id: 'pin-a', homeUrl: 'https://a.com/', alias: 'A', tabId: 42 }),
+          pin({
+            id: 'pin-a',
+            homeUrl: 'https://a.com/',
+            alias: 'A',
+            instances: [
+              {
+                tabId: 42,
+                windowId: 7,
+                lastKnownUrl: 'https://a.com/',
+                lastKnownTitle: 'A',
+              },
+            ],
+          }),
           pin({ id: 'pin-b', homeUrl: 'https://b.com/', alias: 'B', order: 1 }),
         ],
       },
@@ -152,10 +164,12 @@ describe('projectSyncable', () => {
     });
     expect(second.id).toBe('work');
 
-    // No tabId / faviconUrl / tab assignments leak through.
+    // No live instance identity, favicon, or tab assignments leak through.
     const serialized = JSON.stringify(payload);
     expect(serialized).not.toContain('faviconUrl');
+    expect(serialized).not.toContain('instances');
     expect(serialized).not.toContain('tabId');
+    expect(serialized).not.toContain('windowId');
     expect(serialized).not.toContain('tabSpaces');
   });
 
@@ -221,6 +235,19 @@ describe('hashPayload', () => {
     expect(hashPayload(projectSyncable(renamed, DEFAULT_PREFERENCES))).not.toBe(
       hashPayload(base),
     );
+
+    const differentLiveInstance = baseState();
+    differentLiveInstance.spaces[0].homePins[0].instances = [
+      {
+        tabId: 999,
+        windowId: 12,
+        lastKnownUrl: 'https://a.com/other',
+        lastKnownTitle: 'Other',
+      },
+    ];
+    expect(
+      hashPayload(projectSyncable(differentLiveInstance, DEFAULT_PREFERENCES)),
+    ).toBe(hashPayload(base));
   });
 });
 
@@ -359,7 +386,7 @@ describe('mergeSyncIntoState', () => {
     expect(survivingPin.id).toBe('pin-a');
     expect(survivingPin.alias).toBe('Alpha');
     // Machine-local fields preserved from the local pin with the same id.
-    expect(survivingPin.tabId).toBe(42);
+    expect(survivingPin.instances).toEqual(local.spaces[0].homePins[0].instances);
     expect(survivingPin.faviconUrl).toBe('https://example.com/favicon.ico');
   });
 
@@ -371,6 +398,35 @@ describe('mergeSyncIntoState', () => {
 
     expect(merged.spaces.some((space) => space.id === 'work')).toBe(false);
     expect(Object.values(merged.activeSpaceByWindowId)).not.toContain('work');
+  });
+
+  it('initializes a remotely added pin without live instances', () => {
+    const local = baseState();
+    const remote = baseState();
+    remote.spaces[0].homePins.push(
+      pin({
+        id: 'remote-only',
+        order: 2,
+        instances: [
+          {
+            tabId: 500,
+            windowId: 9,
+            lastKnownUrl: 'https://example.com/live',
+            lastKnownTitle: 'Live elsewhere',
+          },
+        ],
+      }),
+    );
+
+    const merged = mergeSyncIntoState(
+      local,
+      projectSyncable(remote, DEFAULT_PREFERENCES),
+    );
+
+    expect(
+      merged.spaces[0].homePins.find((item) => item.id === 'remote-only')
+        ?.instances,
+    ).toEqual([]);
   });
 
   it('round-trips so a merged state reprojects to the same payload (no echo)', () => {

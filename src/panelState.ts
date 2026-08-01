@@ -5,14 +5,14 @@ import type {
   PanelGroup,
   PanelState,
   PanelTab,
-  StoredStateV7,
+  StoredStateV8,
 } from './types';
 import { isAtHome } from './lib/url';
 import { getActiveSpace } from './storage';
 
 export interface BuildPanelStateInput {
   tabs: chrome.tabs.Tab[];
-  state: StoredStateV7;
+  state: StoredStateV8;
   windowId: number | null;
   /** Extension placeholder page URL; matching tabs are hidden from the panel. */
   blankUrl?: string;
@@ -40,7 +40,7 @@ function tabFavicon(tab: chrome.tabs.Tab): string {
 
 function createOpenPanelTab(
   tab: chrome.tabs.Tab,
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePin: HomePin | undefined,
   playingVideoTabIds: ReadonlySet<number>,
 ): PanelTab {
@@ -126,9 +126,9 @@ export function buildPanelState({
     ? tabs.filter((tab) => tab.windowId === windowId)
     : tabs;
   const homePinsByTabId = new Map(
-    activeSpace.homePins
-      .filter((pin) => pin.tabId !== null)
-      .map((pin) => [pin.tabId, pin] as const),
+    activeSpace.homePins.flatMap((pin) =>
+      pin.instances.map((instance) => [instance.tabId, pin] as const),
+    ),
   );
   const openHomePinIds = new Set<string>();
   const panelTabs: PanelTab[] = [];

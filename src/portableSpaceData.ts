@@ -4,7 +4,7 @@ import {
   STORAGE_VERSION,
   type HomePin,
   type Space,
-  type StoredStateV7,
+  type StoredStateV8,
 } from './types';
 
 export const PORTABLE_SPACE_DATA_APP = 'fantab';
@@ -49,12 +49,12 @@ export interface ImportedRegularTab {
 }
 
 export interface ImportedSpaceData {
-  state: StoredStateV7;
+  state: StoredStateV8;
   regularTabs: ImportedRegularTab[];
 }
 
 interface BuildPortableSpaceDataInput {
-  state: StoredStateV7;
+  state: StoredStateV8;
   tabs: chrome.tabs.Tab[];
   blankUrl?: string;
   exportedAt?: Date;
@@ -126,8 +126,7 @@ export function buildPortableSpaceData({
   const homePinTabIds = new Set(
     state.spaces
       .flatMap((space) => space.homePins)
-      .map((pin) => pin.tabId)
-      .filter((tabId): tabId is number => typeof tabId === 'number'),
+      .flatMap((pin) => pin.instances.map((instance) => instance.tabId)),
   );
 
   return {
@@ -208,7 +207,7 @@ export function parsePortableSpaceData(
           homeUrl,
           alias: stringValue(portablePin.alias) || homeUrl,
           faviconUrl: stringValue(portablePin.faviconUrl),
-          tabId: null,
+          instances: [],
           lastKnownUrl,
           lastKnownTitle: nullableStringValue(portablePin.lastKnownTitle),
           createdAt: now,

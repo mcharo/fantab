@@ -1,4 +1,4 @@
-export const STORAGE_VERSION = 7;
+export const STORAGE_VERSION = 8;
 export const DEFAULT_SPACE_ID = 'default';
 export const DEFAULT_SPACE_ICON: SpaceIconId = 'circle';
 
@@ -23,6 +23,17 @@ export type SpaceIconId =
  */
 export type SpaceIcon = SpaceIconId | (string & {});
 
+export interface HomePinInstance {
+  tabId: number;
+  /**
+   * Chrome window currently containing the tab. Null is used only while a
+   * legacy or restored binding is waiting to be reconciled with live tabs.
+   */
+  windowId: number | null;
+  lastKnownUrl: string | null;
+  lastKnownTitle: string | null;
+}
+
 export interface HomePin {
   id: string;
   homeUrl: string;
@@ -37,7 +48,8 @@ export interface HomePin {
    */
   aliasCustom?: boolean;
   faviconUrl: string;
-  tabId: number | null;
+  /** Machine-local live bindings, with at most one instance per window. */
+  instances: HomePinInstance[];
   lastKnownUrl: string | null;
   lastKnownTitle: string | null;
   createdAt: number;
@@ -80,7 +92,7 @@ export interface Space {
   order: number;
 }
 
-export interface StoredStateV7 {
+export interface StoredStateV8 {
   version: typeof STORAGE_VERSION;
   activeSpaceByWindowId: Record<string, string>;
   lastActiveTabBySpace: Record<string, number>;

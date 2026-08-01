@@ -5,7 +5,7 @@ import {
   type HomePin,
   type SectionUnitRef,
   type Space,
-  type StoredStateV7,
+  type StoredStateV8,
 } from './types';
 import { iconForSpaceIndex, normalizeSpaceIcon } from './spaceIcons';
 import { isAtHome } from './lib/url';
@@ -16,20 +16,35 @@ const DEFAULT_WINDOW_KEY = 'default';
 
 export const DEFAULT_GROUP_TITLE = 'New Folder';
 
-interface LegacyStoredStateV3 {
-  version: 3;
-  activeSpaceId: string;
-  spaces: LegacySpace[];
-  tabAliases: Record<string, string>;
+interface LegacyHomePinV7 {
+  id: string;
+  homeUrl: string;
+  alias: string;
+  aliasCustom?: boolean;
+  faviconUrl: string;
+  tabId: number | null;
+  lastKnownUrl: string | null;
+  lastKnownTitle: string | null;
+  createdAt: number;
+  order: number;
+  groupId?: string | null;
 }
 
 interface LegacySpace {
   id: string;
   name: string;
   icon?: unknown;
-  homePins: HomePin[];
+  homePins: LegacyHomePinV7[];
+  groups?: FantabGroup[];
   createdAt: number;
   order: number;
+}
+
+interface LegacyStoredStateV3 {
+  version: 3;
+  activeSpaceId: string;
+  spaces: LegacySpace[];
+  tabAliases: Record<string, string>;
 }
 
 interface LegacyStoredStateV4 {
@@ -56,6 +71,16 @@ interface LegacyStoredStateV6 {
   tabSpaces: Record<string, string>;
 }
 
+interface LegacyStoredStateV7 {
+  version: 7;
+  activeSpaceByWindowId: Record<string, string>;
+  lastActiveTabBySpace?: Record<string, number>;
+  spaces: LegacySpace[];
+  tabAliases: Record<string, string>;
+  tabSpaces: Record<string, string>;
+  tabGroupMembership?: Record<string, string>;
+}
+
 export function createDefaultSpace(): Space {
   return {
     id: DEFAULT_SPACE_ID,
@@ -68,7 +93,7 @@ export function createDefaultSpace(): Space {
   };
 }
 
-export function createDefaultState(): StoredStateV7 {
+export function createDefaultState(): StoredStateV8 {
   return {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: {
@@ -82,7 +107,7 @@ export function createDefaultState(): StoredStateV7 {
   };
 }
 
-export const DEFAULT_STATE: StoredStateV7 = createDefaultState();
+export const DEFAULT_STATE: StoredStateV8 = createDefaultState();
 
 export function windowKey(windowId: number | null | undefined): string {
   return typeof windowId === 'number' ? String(windowId) : DEFAULT_WINDOW_KEY;
@@ -105,12 +130,31 @@ function spaceIdFromActiveTabSpaceKey(key: string): string | null {
   return key.slice(separatorIndex + 1);
 }
 
-export function isStoredStateV7(value: unknown): value is StoredStateV7 {
+export function isStoredStateV8(value: unknown): value is StoredStateV8 {
   if (!value || typeof value !== 'object') return false;
 
-  const state = value as Partial<StoredStateV7>;
+  const state = value as Partial<StoredStateV8>;
   return (
     state.version === STORAGE_VERSION &&
+    !!state.activeSpaceByWindowId &&
+    typeof state.activeSpaceByWindowId === 'object' &&
+    Array.isArray(state.spaces) &&
+    state.spaces.length > 0 &&
+    !!state.tabAliases &&
+    typeof state.tabAliases === 'object' &&
+    !!state.tabSpaces &&
+    typeof state.tabSpaces === 'object' &&
+    (state.lastActiveTabBySpace === undefined ||
+      typeof state.lastActiveTabBySpace === 'object')
+  );
+}
+
+function isLegacyStoredStateV7(value: unknown): value is LegacyStoredStateV7 {
+  if (!value || typeof value !== 'object') return false;
+
+  const state = value as Partial<LegacyStoredStateV7>;
+  return (
+    state.version === 7 &&
     !!state.activeSpaceByWindowId &&
     typeof state.activeSpaceByWindowId === 'object' &&
     Array.isArray(state.spaces) &&
@@ -185,45 +229,64 @@ function isLegacyStoredStateV6(value: unknown): value is LegacyStoredStateV6 {
   );
 }
 
-function normalizeSpace(space: LegacySpace, index: number): Space {
+function migrateLegacyHomePin(pin: LegacyHomePinV7): HomePin {
+  const { tabId, ...logicalPin } = pin;
+  return {
+    ...logicalPin,
+    instances:
+      typeof tabId === 'number'
+        ? [
+            {
+              tabId,
+              windowId: null,
+              lastKnownUrl: pin.lastKnownUrl ?? null,
+              lastKnownTitle: pin.lastKnownTitle ?? null,
+            },
+          ]
+        : [],
+  };
+}
+
+function migrateLegacySpace(space: LegacySpace, index: number): Space {
   return {
     ...space,
     icon:
       typeof space.icon === 'string'
         ? normalizeSpaceIcon(space.icon)
         : iconForSpaceIndex(index),
+    homePins: space.homePins.map(migrateLegacyHomePin),
   };
 }
 
-function migrateV3State(state: LegacyStoredStateV3): StoredStateV7 {
+function migrateV3State(state: LegacyStoredStateV3): StoredStateV8 {
   return {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: {
       [DEFAULT_WINDOW_KEY]: state.activeSpaceId,
     },
-    spaces: state.spaces.map(normalizeSpace),
+    spaces: state.spaces.map(migrateLegacySpace),
     lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
   };
 }
 
-function migrateV4State(state: LegacyStoredStateV4): StoredStateV7 {
+function migrateV4State(state: LegacyStoredStateV4): StoredStateV8 {
   return {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: state.activeSpaceByWindowId,
-    spaces: state.spaces.map(normalizeSpace),
+    spaces: state.spaces.map(migrateLegacySpace),
     lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
   };
 }
 
-function migrateV5State(state: LegacyStoredStateV5): StoredStateV7 {
+function migrateV5State(state: LegacyStoredStateV5): StoredStateV8 {
   return {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: state.activeSpaceByWindowId,
-    spaces: state.spaces.map(normalizeSpace),
+    spaces: state.spaces.map(migrateLegacySpace),
     lastActiveTabBySpace: {},
     tabAliases: state.tabAliases,
     tabSpaces: {},
@@ -233,12 +296,12 @@ function migrateV5State(state: LegacyStoredStateV5): StoredStateV7 {
 
 // V6 -> V7: introduce fantab-owned tab groups. Existing spaces gain an empty
 // group list, pins stay loose, and there is no unpinned-group membership yet.
-function migrateV6State(state: LegacyStoredStateV6): StoredStateV7 {
+function migrateV6State(state: LegacyStoredStateV6): StoredStateV8 {
   return {
     version: STORAGE_VERSION,
     activeSpaceByWindowId: state.activeSpaceByWindowId,
     spaces: state.spaces.map((space, index) => ({
-      ...normalizeSpace(space, index),
+      ...migrateLegacySpace(space, index),
       groups: [],
     })),
     lastActiveTabBySpace: state.lastActiveTabBySpace ?? {},
@@ -248,7 +311,19 @@ function migrateV6State(state: LegacyStoredStateV6): StoredStateV7 {
   };
 }
 
-export function normalizeState(state: StoredStateV7): StoredStateV7 {
+function migrateV7State(state: LegacyStoredStateV7): StoredStateV8 {
+  return {
+    version: STORAGE_VERSION,
+    activeSpaceByWindowId: state.activeSpaceByWindowId,
+    lastActiveTabBySpace: state.lastActiveTabBySpace ?? {},
+    spaces: state.spaces.map(migrateLegacySpace),
+    tabAliases: state.tabAliases,
+    tabSpaces: state.tabSpaces,
+    tabGroupMembership: state.tabGroupMembership ?? {},
+  };
+}
+
+export function normalizeState(state: StoredStateV8): StoredStateV8 {
   const sortedSpaces = [...state.spaces].sort((a, b) => a.order - b.order);
   const spaceIds = new Set(sortedSpaces.map((space) => space.id));
   const activeSpaceByWindowId: Record<string, string> = {};
@@ -303,6 +378,7 @@ export function normalizeState(state: StoredStateV7): StoredStateV7 {
 
   // Reindex pins and validate each pin's pinned-group reference up front so we
   // know which pinned groups actually have members.
+  const claimedHomePinTabIds = new Set<number>();
   const reindexedSpaces = sortedSpaces.map((space, index) => {
     const pinnedGroupIds = new Set(
       (space.groups ?? [])
@@ -312,12 +388,52 @@ export function normalizeState(state: StoredStateV7): StoredStateV7 {
 
     const homePins = [...space.homePins]
       .sort((a, b) => a.order - b.order)
-      .map((pin, pinIndex) => ({
-        ...pin,
-        order: pinIndex,
-        groupId:
-          pin.groupId && pinnedGroupIds.has(pin.groupId) ? pin.groupId : null,
-      }));
+      .map((pin, pinIndex) => {
+        const seenWindowIds = new Set<number>();
+        const instances = (
+          Array.isArray(pin.instances) ? pin.instances : []
+        ).filter((instance) => {
+          if (
+            !instance ||
+            typeof instance.tabId !== 'number' ||
+            !Number.isFinite(instance.tabId) ||
+            (instance.windowId !== null &&
+              (typeof instance.windowId !== 'number' ||
+                !Number.isFinite(instance.windowId))) ||
+            claimedHomePinTabIds.has(instance.tabId) ||
+            (typeof instance.windowId === 'number' &&
+              seenWindowIds.has(instance.windowId))
+          ) {
+            return false;
+          }
+
+          claimedHomePinTabIds.add(instance.tabId);
+          if (typeof instance.windowId === 'number') {
+            seenWindowIds.add(instance.windowId);
+          }
+          return true;
+        })
+        .map((instance) => ({
+          tabId: instance.tabId,
+          windowId: instance.windowId,
+          lastKnownUrl:
+            typeof instance.lastKnownUrl === 'string'
+              ? instance.lastKnownUrl
+              : null,
+          lastKnownTitle:
+            typeof instance.lastKnownTitle === 'string'
+              ? instance.lastKnownTitle
+              : null,
+        }));
+
+        return {
+          ...pin,
+          instances,
+          order: pinIndex,
+          groupId:
+            pin.groupId && pinnedGroupIds.has(pin.groupId) ? pin.groupId : null,
+        };
+      });
 
     return { space, index, homePins };
   });
@@ -368,11 +484,12 @@ export function normalizeState(state: StoredStateV7): StoredStateV7 {
   };
 }
 
-export async function loadState(): Promise<StoredStateV7> {
+export async function loadState(): Promise<StoredStateV8> {
   const result = await chrome.storage.local.get(STORAGE_KEY);
   const state = result[STORAGE_KEY];
 
-  if (isStoredStateV7(state)) return normalizeState(state);
+  if (isStoredStateV8(state)) return normalizeState(state);
+  if (isLegacyStoredStateV7(state)) return normalizeState(migrateV7State(state));
   if (isLegacyStoredStateV6(state)) return normalizeState(migrateV6State(state));
   if (isLegacyStoredStateV5(state)) return normalizeState(migrateV5State(state));
   if (isLegacyStoredStateV4(state)) return normalizeState(migrateV4State(state));
@@ -381,7 +498,7 @@ export async function loadState(): Promise<StoredStateV7> {
   return createDefaultState();
 }
 
-export async function saveState(state: StoredStateV7): Promise<void> {
+export async function saveState(state: StoredStateV8): Promise<void> {
   await chrome.storage.local.set({ [STORAGE_KEY]: normalizeState(state) });
 }
 
@@ -390,7 +507,7 @@ export function generateId(): string {
 }
 
 export function getActiveSpaceId(
-  state: StoredStateV7,
+  state: StoredStateV8,
   windowId?: number | null,
 ): string {
   const key = windowKey(windowId);
@@ -402,7 +519,7 @@ export function getActiveSpaceId(
 }
 
 export function getActiveSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   windowId?: number | null,
 ): Space {
   const activeSpaceId = getActiveSpaceId(state, windowId);
@@ -413,10 +530,10 @@ export function getActiveSpace(
 }
 
 function updateSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   spaceId: string,
   updater: (space: Space) => Space,
-): StoredStateV7 {
+): StoredStateV8 {
   return {
     ...state,
     spaces: state.spaces.map((space) =>
@@ -426,7 +543,7 @@ function updateSpace(
 }
 
 export function findHomePinById(
-  state: StoredStateV7,
+  state: StoredStateV8,
   id: string,
   spaceId = getActiveSpaceId(state),
 ): HomePin | undefined {
@@ -435,22 +552,85 @@ export function findHomePinById(
     ?.homePins.find((pin) => pin.id === id);
 }
 
+export function getHomePinInstanceForWindow(
+  pin: HomePin,
+  windowId: number | null | undefined,
+) {
+  return typeof windowId === 'number'
+    ? pin.instances.find((instance) => instance.windowId === windowId)
+    : pin.instances[0];
+}
+
+export function getHomePinInstanceByTabId(pin: HomePin, tabId: number) {
+  return pin.instances.find((instance) => instance.tabId === tabId);
+}
+
+export function getHomePinTabIds(pin: HomePin): number[] {
+  return pin.instances.map((instance) => instance.tabId);
+}
+
 export function findHomePinByTabId(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
   spaceId = getActiveSpaceId(state),
 ): HomePin | undefined {
   return state.spaces
     .find((space) => space.id === spaceId)
-    ?.homePins.find((pin) => pin.tabId === tabId);
+    ?.homePins.find((pin) => getHomePinInstanceByTabId(pin, tabId));
+}
+
+export function upsertHomePinInstance(
+  state: StoredStateV8,
+  homePinId: string,
+  instance: HomePin['instances'][number],
+  spaceId = getActiveSpaceId(state),
+): StoredStateV8 {
+  return updateHomePin(
+    state,
+    homePinId,
+    {
+      instances: [
+        ...(findHomePinById(state, homePinId, spaceId)?.instances ?? []).filter(
+          (candidate) =>
+            candidate.tabId !== instance.tabId &&
+            (instance.windowId === null ||
+              candidate.windowId !== instance.windowId),
+        ),
+        instance,
+      ],
+    },
+    spaceId,
+  );
+}
+
+export function removeHomePinInstanceByTabId(
+  state: StoredStateV8,
+  tabId: number,
+): StoredStateV8 {
+  let changed = false;
+  const spaces = state.spaces.map((space) => {
+    let spaceChanged = false;
+    const homePins = space.homePins.map((pin) => {
+      const instances = pin.instances.filter(
+        (instance) => instance.tabId !== tabId,
+      );
+      if (instances.length === pin.instances.length) return pin;
+      changed = true;
+      spaceChanged = true;
+      return { ...pin, instances };
+    });
+    return spaceChanged ? { ...space, homePins } : space;
+  });
+
+  return changed ? { ...state, spaces } : state;
 }
 
 export function updateHomePin(
-  state: StoredStateV7,
+  state: StoredStateV8,
   id: string,
   updates: Partial<HomePin>,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   return updateSpace(state, spaceId, (space) => ({
     ...space,
     homePins: space.homePins.map((pin) =>
@@ -460,10 +640,10 @@ export function updateHomePin(
 }
 
 export function addHomePin(
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePin: HomePin,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   return updateSpace(state, spaceId, (space) => ({
     ...space,
     homePins: [...space.homePins, homePin],
@@ -471,10 +651,10 @@ export function addHomePin(
 }
 
 export function removeHomePin(
-  state: StoredStateV7,
+  state: StoredStateV8,
   id: string,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   return updateSpace(state, spaceId, (space) => ({
     ...space,
     homePins: space.homePins.filter((pin) => pin.id !== id),
@@ -482,11 +662,11 @@ export function removeHomePin(
 }
 
 export function moveHomePin(
-  state: StoredStateV7,
+  state: StoredStateV8,
   id: string,
   toIndex: number,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   const space = state.spaces.find((candidate) => candidate.id === spaceId);
   if (!space) return state;
 
@@ -513,12 +693,12 @@ export function moveHomePin(
  * pins inside folders (which aren't contiguous in the overall pin order).
  */
 export function moveHomePinRelativeTo(
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePinId: string,
   targetHomePinId: string,
   position: 'before' | 'after',
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   if (homePinId === targetHomePinId) return state;
 
   const space = state.spaces.find((candidate) => candidate.id === spaceId);
@@ -541,10 +721,10 @@ export function moveHomePinRelativeTo(
 }
 
 export function moveHomePinToSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   id: string,
   targetSpaceId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const targetSpace = state.spaces.find((space) => space.id === targetSpaceId);
   if (!targetSpace) return state;
 
@@ -588,19 +768,19 @@ export function moveHomePinToSpace(
     }),
   };
 
-  if (typeof homePin.tabId === 'number') {
-    nextState = assignTabToSpace(nextState, homePin.tabId, targetSpace.id);
+  for (const tabId of getHomePinTabIds(homePin)) {
+    nextState = assignTabToSpace(nextState, tabId, targetSpace.id);
   }
 
   return nextState;
 }
 
 export function createSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   name: string,
   windowId?: number | null,
   icon?: unknown,
-): StoredStateV7 {
+): StoredStateV8 {
   const trimmed = name.trim() || `Space ${state.spaces.length + 1}`;
   const nextOrder = state.spaces.reduce(
     (max, space) => Math.max(max, space.order),
@@ -629,10 +809,10 @@ export function createSpace(
 }
 
 export function renameSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   spaceId: string,
   name: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const trimmed = name.trim();
   if (!trimmed) return state;
 
@@ -640,10 +820,10 @@ export function renameSpace(
 }
 
 export function updateSpaceDetails(
-  state: StoredStateV7,
+  state: StoredStateV8,
   spaceId: string,
   updates: { name?: string; icon?: unknown },
-): StoredStateV7 {
+): StoredStateV8 {
   return updateSpace(state, spaceId, (space) => {
     const name = updates.name?.trim();
 
@@ -659,10 +839,10 @@ export function updateSpaceDetails(
 }
 
 export function switchSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   spaceId: string,
   windowId?: number | null,
-): StoredStateV7 {
+): StoredStateV8 {
   if (!state.spaces.some((space) => space.id === spaceId)) return state;
 
   return {
@@ -675,9 +855,9 @@ export function switchSpace(
 }
 
 export function deleteSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   spaceId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   if (state.spaces.length <= 1) return state;
 
   const spaces = state.spaces
@@ -721,10 +901,10 @@ export function deleteSpace(
 }
 
 export function renameTabAlias(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
   alias: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const tabAliases = { ...state.tabAliases };
   const trimmed = alias.trim();
 
@@ -735,18 +915,18 @@ export function renameTabAlias(
 }
 
 export function removeTabAlias(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
-): StoredStateV7 {
+): StoredStateV8 {
   const tabAliases = { ...state.tabAliases };
   delete tabAliases[String(tabId)];
   return { ...state, tabAliases };
 }
 
 export function pruneAliasesForTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabIds: Set<number>,
-): StoredStateV7 {
+): StoredStateV8 {
   const tabAliases: Record<string, string> = {};
 
   for (const [tabId, alias] of Object.entries(state.tabAliases)) {
@@ -763,9 +943,9 @@ export function pruneAliasesForTabs(
 }
 
 export function pruneTabSpacesForTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabIds: Set<number>,
-): StoredStateV7 {
+): StoredStateV8 {
   const tabSpaces: Record<string, string> = {};
 
   for (const [tabId, spaceId] of Object.entries(state.tabSpaces)) {
@@ -782,9 +962,9 @@ export function pruneTabSpacesForTabs(
 }
 
 export function pruneLastActiveTabsForTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabIds: Set<number>,
-): StoredStateV7 {
+): StoredStateV8 {
   const lastActiveTabBySpace: Record<string, number> = {};
 
   for (const [key, tabId] of Object.entries(state.lastActiveTabBySpace)) {
@@ -804,11 +984,11 @@ export function pruneLastActiveTabsForTabs(
 }
 
 export function rememberActiveTabForSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   windowId: number | null | undefined,
   spaceId: string,
   tabId: number,
-): StoredStateV7 {
+): StoredStateV8 {
   if (!state.spaces.some((space) => space.id === spaceId)) return state;
 
   const key = activeTabSpaceKey(windowId, spaceId);
@@ -824,7 +1004,7 @@ export function rememberActiveTabForSpace(
 }
 
 export function getRememberedActiveTabId(
-  state: StoredStateV7,
+  state: StoredStateV8,
   windowId: number | null | undefined,
   spaceId: string,
 ): number | null {
@@ -834,10 +1014,10 @@ export function getRememberedActiveTabId(
 }
 
 export function assignTabToSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
   spaceId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   if (!state.spaces.some((space) => space.id === spaceId)) return state;
   if (state.tabSpaces[tabKey(tabId)] === spaceId) return state;
 
@@ -857,9 +1037,9 @@ export function assignTabToSpace(
 }
 
 export function assignTabsToActiveSpaces(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabs: chrome.tabs.Tab[],
-): StoredStateV7 {
+): StoredStateV8 {
   const liveTabIds = new Set(
     liveTabs
       .map((tab) => tab.id)
@@ -870,15 +1050,15 @@ export function assignTabsToActiveSpaces(
 
   for (const space of state.spaces) {
     for (const pin of space.homePins) {
-      if (typeof pin.tabId !== 'number' || !liveTabIds.has(pin.tabId)) {
-        continue;
+      for (const instance of pin.instances) {
+        if (!liveTabIds.has(instance.tabId)) continue;
+
+        const key = tabKey(instance.tabId);
+        if (tabSpaces[key] === space.id) continue;
+
+        tabSpaces[key] = space.id;
+        changed = true;
       }
-
-      const key = tabKey(pin.tabId);
-      if (tabSpaces[key]) continue;
-
-      tabSpaces[key] = space.id;
-      changed = true;
     }
   }
 
@@ -895,29 +1075,104 @@ export function assignTabsToActiveSpaces(
   return changed ? { ...state, tabSpaces } : state;
 }
 
-export function updateHomePinsFromTabs(
-  state: StoredStateV7,
+export function reconcileHomePinInstancesFromTabs(
+  state: StoredStateV8,
   liveTabs: chrome.tabs.Tab[],
-): StoredStateV7 {
-  const tabMap = new Map(liveTabs.map((tab) => [tab.id, tab]));
+  preserveMissingInstances = false,
+): StoredStateV8 {
+  const tabMap = new Map(
+    liveTabs
+      .filter(
+        (tab): tab is chrome.tabs.Tab & { id: number } =>
+          typeof tab.id === 'number',
+      )
+      .map((tab) => [tab.id, tab]),
+  );
+  const globallyClaimedTabIds = new Set<number>();
   let changed = false;
 
   const spaces = state.spaces.map((space) => ({
     ...space,
     homePins: space.homePins.map((pin) => {
-      if (pin.tabId === null) return pin;
+      const candidates = pin.instances
+        .map((instance, index) => {
+          const tab = tabMap.get(instance.tabId);
+          if (!tab && !preserveMissingInstances) return null;
+          return {
+            index,
+            tab,
+            instance: tab
+              ? {
+                  ...instance,
+                  windowId: tab.windowId ?? null,
+                  lastKnownUrl:
+                    tab.url ?? tab.pendingUrl ?? instance.lastKnownUrl,
+                  lastKnownTitle: tab.title ?? instance.lastKnownTitle,
+                }
+              : instance,
+          };
+        })
+        .filter(
+          (
+            candidate,
+          ): candidate is {
+            index: number;
+            tab: (chrome.tabs.Tab & { id: number }) | undefined;
+            instance: HomePin['instances'][number];
+          } => candidate !== null,
+        )
+        .sort((left, right) => {
+          const accessed =
+            (right.tab?.lastAccessed ?? 0) - (left.tab?.lastAccessed ?? 0);
+          return accessed || left.index - right.index;
+        });
 
-      const tab = tabMap.get(pin.tabId);
-      if (!tab) {
-        changed = true;
-        return { ...pin, tabId: null };
-      }
+      const seenWindowIds = new Set<number>();
+      const kept = candidates.filter(({ instance }) => {
+        if (globallyClaimedTabIds.has(instance.tabId)) return false;
+        if (
+          typeof instance.windowId === 'number' &&
+          seenWindowIds.has(instance.windowId)
+        ) {
+          return false;
+        }
+        globallyClaimedTabIds.add(instance.tabId);
+        if (typeof instance.windowId === 'number') {
+          seenWindowIds.add(instance.windowId);
+        }
+        return true;
+      });
 
-      const nextPin = {
+      const instances = kept
+        .sort((left, right) => {
+          const leftWindow = left.instance.windowId ?? Number.MAX_SAFE_INTEGER;
+          const rightWindow = right.instance.windowId ?? Number.MAX_SAFE_INTEGER;
+          return (
+            leftWindow - rightWindow ||
+            left.instance.tabId - right.instance.tabId
+          );
+        })
+        .map(({ instance }) => instance);
+      const latestLive = kept
+        .filter(
+          (
+            candidate,
+          ): candidate is typeof candidate & {
+            tab: chrome.tabs.Tab & { id: number };
+          } => !!candidate.tab,
+        )
+        .sort(
+          (left, right) =>
+            (right.tab.lastAccessed ?? 0) - (left.tab.lastAccessed ?? 0),
+        )[0]?.tab;
+
+      const nextPin: HomePin = {
         ...pin,
-        faviconUrl: tab.favIconUrl ?? pin.faviconUrl,
-        lastKnownUrl: tab.url ?? tab.pendingUrl ?? pin.lastKnownUrl,
-        lastKnownTitle: tab.title ?? pin.lastKnownTitle,
+        instances,
+        faviconUrl: latestLive?.favIconUrl ?? pin.faviconUrl,
+        lastKnownUrl:
+          latestLive?.url ?? latestLive?.pendingUrl ?? pin.lastKnownUrl,
+        lastKnownTitle: latestLive?.title ?? pin.lastKnownTitle,
       };
 
       if (JSON.stringify(nextPin) !== JSON.stringify(pin)) {
@@ -945,28 +1200,38 @@ export function updateHomePinsFromTabs(
  * tab a prior reconcile may have parked in the active space as a loose tab).
  */
 export function reattachHomePinsToRestoredTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabs: chrome.tabs.Tab[],
-): StoredStateV7 {
+): StoredStateV8 {
   const liveTabIds = new Set(
     liveTabs
       .map((tab) => tab.id)
       .filter((tabId): tabId is number => typeof tabId === 'number'),
   );
 
-  const lostPins = state.spaces.flatMap((space) =>
-    space.homePins.filter(
-      (pin) => typeof pin.tabId !== 'number' || !liveTabIds.has(pin.tabId),
+  const lostInstances = state.spaces.flatMap((space) =>
+    space.homePins.flatMap((pin) =>
+      pin.instances
+        .filter((instance) => !liveTabIds.has(instance.tabId))
+        .map((instance) => ({ instance, pin, spaceId: space.id })),
     ),
   );
-  if (lostPins.length === 0) return state;
+  if (lostInstances.length === 0) return state;
 
   // Tabs still held by a live pin binding must not be reused.
   const claimed = new Set<number>();
+  const claimedWindowsByPinId = new Map<string, Set<number>>();
   for (const space of state.spaces) {
     for (const pin of space.homePins) {
-      if (typeof pin.tabId === 'number' && liveTabIds.has(pin.tabId)) {
-        claimed.add(pin.tabId);
+      for (const instance of pin.instances) {
+        if (!liveTabIds.has(instance.tabId)) continue;
+        claimed.add(instance.tabId);
+        const tab = liveTabs.find((candidate) => candidate.id === instance.tabId);
+        if (typeof tab?.windowId === 'number') {
+          const windows = claimedWindowsByPinId.get(pin.id) ?? new Set<number>();
+          windows.add(tab.windowId);
+          claimedWindowsByPinId.set(pin.id, windows);
+        }
       }
     }
   }
@@ -976,28 +1241,35 @@ export function reattachHomePinsToRestoredTabs(
       typeof tab.id === 'number' && !!(tab.url ?? tab.pendingUrl),
   );
 
-  const matches = new Map<string, chrome.tabs.Tab & { id: number }>();
-  const matchPass = (ref: (pin: HomePin) => string | null) => {
-    for (const pin of lostPins) {
-      if (matches.has(pin.id)) continue;
+  const matches = new Map<number, chrome.tabs.Tab & { id: number }>();
+  const matchPass = (
+    ref: (lost: (typeof lostInstances)[number]) => string | null,
+  ) => {
+    for (const lost of lostInstances) {
+      if (matches.has(lost.instance.tabId)) continue;
 
-      const homeRef = ref(pin);
+      const homeRef = ref(lost);
       if (!homeRef) continue;
 
       const match = candidates.find(
         (tab) =>
           !claimed.has(tab.id) &&
+          !claimedWindowsByPinId.get(lost.pin.id)?.has(tab.windowId) &&
           isAtHome(tab.url ?? tab.pendingUrl ?? null, homeRef),
       );
       if (match) {
-        matches.set(pin.id, match);
+        matches.set(lost.instance.tabId, match);
         claimed.add(match.id);
+        const windows =
+          claimedWindowsByPinId.get(lost.pin.id) ?? new Set<number>();
+        windows.add(match.windowId);
+        claimedWindowsByPinId.set(lost.pin.id, windows);
       }
     }
   };
 
-  matchPass((pin) => pin.lastKnownUrl);
-  matchPass((pin) => pin.homeUrl);
+  matchPass((lost) => lost.instance.lastKnownUrl);
+  matchPass((lost) => lost.pin.homeUrl);
 
   if (matches.size === 0) return state;
 
@@ -1005,18 +1277,30 @@ export function reattachHomePinsToRestoredTabs(
   const spaces = state.spaces.map((space) => {
     let spaceChanged = false;
     const homePins = space.homePins.map((pin) => {
-      const match = matches.get(pin.id);
-      if (!match) return pin;
-
-      tabSpaces[tabKey(match.id)] = space.id;
-      spaceChanged = true;
+      let latestMatch: (chrome.tabs.Tab & { id: number }) | undefined;
+      const instances = pin.instances.map((instance) => {
+        const match = matches.get(instance.tabId);
+        if (!match) return instance;
+        tabSpaces[tabKey(match.id)] = space.id;
+        spaceChanged = true;
+        latestMatch = match;
+        return {
+          tabId: match.id,
+          windowId: match.windowId,
+          lastKnownUrl:
+            match.url ?? match.pendingUrl ?? instance.lastKnownUrl,
+          lastKnownTitle: match.title ?? instance.lastKnownTitle,
+        };
+      });
+      if (!latestMatch) return pin;
 
       return {
         ...pin,
-        tabId: match.id,
-        faviconUrl: match.favIconUrl ?? pin.faviconUrl,
-        lastKnownUrl: match.url ?? match.pendingUrl ?? pin.lastKnownUrl,
-        lastKnownTitle: match.title ?? pin.lastKnownTitle,
+        instances,
+        faviconUrl: latestMatch.favIconUrl ?? pin.faviconUrl,
+        lastKnownUrl:
+          latestMatch.url ?? latestMatch.pendingUrl ?? pin.lastKnownUrl,
+        lastKnownTitle: latestMatch.title ?? pin.lastKnownTitle,
       };
     });
 
@@ -1034,7 +1318,7 @@ interface GroupLocation {
 }
 
 function findGroupEntry(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
 ): GroupLocation | null {
   for (const space of state.spaces) {
@@ -1047,21 +1331,21 @@ function findGroupEntry(
 }
 
 export function findGroupById(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
 ): FantabGroup | undefined {
   return findGroupEntry(state, groupId)?.group ?? undefined;
 }
 
 export function createGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   options: {
     title?: string;
     pinned: boolean;
     id?: string;
   },
   spaceId = getActiveSpaceId(state),
-): { state: StoredStateV7; groupId: string } {
+): { state: StoredStateV8; groupId: string } {
   const space = state.spaces.find((candidate) => candidate.id === spaceId);
   if (!space) return { state, groupId: '' };
 
@@ -1096,10 +1380,10 @@ export function createGroup(
  * while their `tabGroupMembership` is preserved.
  */
 export function moveGroupToSpace(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
   targetSpaceId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
 
@@ -1124,7 +1408,7 @@ export function moveGroupToSpace(
     let nextTargetPinOrder =
       targetSpace.homePins.reduce((max, pin) => Math.max(max, pin.order), -1) + 1;
 
-    let nextState: StoredStateV7 = {
+    let nextState: StoredStateV8 = {
       ...state,
       spaces: state.spaces.map((space) => {
         if (space.id === sourceSpace.id) {
@@ -1153,8 +1437,8 @@ export function moveGroupToSpace(
 
     // Keep any open tabs backing these pins in the same space as the pin.
     for (const pin of members) {
-      if (typeof pin.tabId === 'number') {
-        nextState = assignTabToSpace(nextState, pin.tabId, targetSpace.id);
+      for (const tabId of getHomePinTabIds(pin)) {
+        nextState = assignTabToSpace(nextState, tabId, targetSpace.id);
       }
     }
 
@@ -1190,10 +1474,10 @@ export function moveGroupToSpace(
 }
 
 export function updateGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
   updates: { title?: string; collapsed?: boolean; peek?: boolean },
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
 
@@ -1219,10 +1503,10 @@ export function updateGroup(
 }
 
 export function setGroupPinned(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
   pinned: boolean,
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
 
@@ -1235,10 +1519,10 @@ export function setGroupPinned(
 }
 
 export function moveGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
   toIndex: number,
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
 
@@ -1316,12 +1600,12 @@ function pinnedUnitMatches(unit: PinnedUnit, ref: SectionUnitRef): boolean {
  * dragged/target being a folder or a loose pin.
  */
 export function reorderPinnedSection(
-  state: StoredStateV7,
+  state: StoredStateV8,
   dragged: SectionUnitRef,
   target: SectionUnitRef,
   position: 'before' | 'after',
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   const space = state.spaces.find((candidate) => candidate.id === spaceId);
   if (!space) return state;
 
@@ -1413,9 +1697,9 @@ export function planUnpinnedReorder(
 
 /** Remove a group definition only; member pins/tabs become loose. */
 export function removeGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry) return state;
 
@@ -1439,10 +1723,10 @@ export function removeGroup(
 
 /** Assign a live tab to an unpinned group. */
 export function setTabGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
   groupId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   return {
     ...state,
     tabGroupMembership: {
@@ -1454,9 +1738,9 @@ export function setTabGroup(
 
 /** Drop a live tab's unpinned-group membership. */
 export function removeTabFromGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   tabId: number,
-): StoredStateV7 {
+): StoredStateV8 {
   const current = state.tabGroupMembership ?? {};
   if (!(tabKey(tabId) in current)) return state;
 
@@ -1467,11 +1751,11 @@ export function removeTabFromGroup(
 
 /** Set or clear a home pin's pinned-group membership. */
 export function setHomePinGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePinId: string,
   groupId: string | null,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   return updateHomePin(state, homePinId, { groupId }, spaceId);
 }
 
@@ -1481,11 +1765,11 @@ export function setHomePinGroup(
  * jumping to wherever the pin happened to be.
  */
 export function addHomePinToGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePinId: string,
   groupId: string,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   const withGroup = setHomePinGroup(state, homePinId, groupId, spaceId);
   const space = withGroup.spaces.find((candidate) => candidate.id === spaceId);
   if (!space) return withGroup;
@@ -1511,9 +1795,9 @@ export function addHomePinToGroup(
  * member was open — {@link normalizeState} then prunes it.
  */
 export function unpinGroup(
-  state: StoredStateV7,
+  state: StoredStateV8,
   groupId: string,
-): StoredStateV7 {
+): StoredStateV8 {
   const entry = findGroupEntry(state, groupId);
   if (!entry || !entry.group.pinned) return state;
 
@@ -1525,13 +1809,14 @@ export function unpinGroup(
   const tabAliases = { ...state.tabAliases };
 
   for (const pin of memberPins) {
-    if (typeof pin.tabId !== 'number') continue; // closed pins are dropped
-    const key = tabKey(pin.tabId);
-    tabSpaces[key] = space.id;
-    tabGroupMembership[key] = groupId;
-    // Only a deliberate rename follows the tab; an auto-captured title would
-    // otherwise freeze the live tab's title (it stops tracking the page).
-    if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
+    for (const instance of pin.instances) {
+      const key = tabKey(instance.tabId);
+      tabSpaces[key] = space.id;
+      tabGroupMembership[key] = groupId;
+      // Only a deliberate rename follows the tab; an auto-captured title would
+      // otherwise freeze the live tab's title (it stops tracking the page).
+      if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
+    }
   }
 
   const spaces = state.spaces.map((candidate) =>
@@ -1558,24 +1843,28 @@ export function unpinGroup(
  * open home pin is moved into an unpinned (live-tab) folder.
  */
 export function demoteHomePinToTab(
-  state: StoredStateV7,
+  state: StoredStateV8,
   homePinId: string,
   spaceId = getActiveSpaceId(state),
-): StoredStateV7 {
+): StoredStateV8 {
   const space = state.spaces.find((candidate) => candidate.id === spaceId);
   const pin = space?.homePins.find((candidate) => candidate.id === homePinId);
-  if (!space || !pin || typeof pin.tabId !== 'number') return state;
+  if (!space || !pin || pin.instances.length === 0) return state;
 
-  const key = tabKey(pin.tabId);
   const tabAliases = { ...state.tabAliases };
-  // Only a deliberate rename follows the tab; an auto-captured title would
-  // otherwise freeze the live tab's title (it stops tracking the page).
-  if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
+  const tabSpaces = { ...state.tabSpaces };
+  for (const instance of pin.instances) {
+    const key = tabKey(instance.tabId);
+    tabSpaces[key] = space.id;
+    // Only a deliberate rename follows the tab; an auto-captured title would
+    // otherwise freeze the live tab's title (it stops tracking the page).
+    if (pin.alias && pin.aliasCustom) tabAliases[key] = pin.alias;
+  }
 
   return {
     ...state,
     tabAliases,
-    tabSpaces: { ...state.tabSpaces, [key]: space.id },
+    tabSpaces,
     spaces: state.spaces.map((candidate) =>
       candidate.id === space.id
         ? {
@@ -1588,9 +1877,9 @@ export function demoteHomePinToTab(
 }
 
 export function pruneTabGroupMembershipForTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabIds: Set<number>,
-): StoredStateV7 {
+): StoredStateV8 {
   const current = state.tabGroupMembership ?? {};
   const tabGroupMembership: Record<string, string> = {};
 
@@ -1620,10 +1909,10 @@ export function pruneTabGroupMembershipForTabs(
  * cheaply skip persisting.
  */
 export function migrateTabId(
-  state: StoredStateV7,
+  state: StoredStateV8,
   oldTabId: number,
   newTabId: number,
-): StoredStateV7 {
+): StoredStateV8 {
   if (oldTabId === newTabId) return state;
 
   const oldKey = tabKey(oldTabId);
@@ -1663,9 +1952,18 @@ export function migrateTabId(
   const spaces = state.spaces.map((space) => {
     let spaceChanged = false;
     const homePins = space.homePins.map((pin) => {
-      if (pin.tabId !== oldTabId) return pin;
+      if (!pin.instances.some((instance) => instance.tabId === oldTabId)) {
+        return pin;
+      }
       spaceChanged = true;
-      return { ...pin, tabId: newTabId };
+      return {
+        ...pin,
+        instances: pin.instances.map((instance) =>
+          instance.tabId === oldTabId
+            ? { ...instance, tabId: newTabId }
+            : instance,
+        ),
+      };
     });
     return spaceChanged ? { ...space, homePins } : space;
   });
@@ -1686,9 +1984,10 @@ export function migrateTabId(
 }
 
 export function reconcileStateForTabs(
-  state: StoredStateV7,
+  state: StoredStateV8,
   liveTabs: chrome.tabs.Tab[],
-): StoredStateV7 {
+  preserveMissingHomePinInstances = false,
+): StoredStateV8 {
   const liveTabIds = new Set(
     liveTabs
       .map((tab) => tab.id)
@@ -1706,15 +2005,19 @@ export function reconcileStateForTabs(
     liveTabIds,
   );
 
-  return updateHomePinsFromTabs(
-    assignTabsToActiveSpaces(prunedState, liveTabs),
+  return assignTabsToActiveSpaces(
+    reconcileHomePinInstancesFromTabs(
+      prunedState,
+      liveTabs,
+      preserveMissingHomePinInstances,
+    ),
     liveTabs,
   );
 }
 
 export function statesEqual(
-  left: StoredStateV7,
-  right: StoredStateV7,
+  left: StoredStateV8,
+  right: StoredStateV8,
 ): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }

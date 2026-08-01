@@ -4,7 +4,7 @@ import {
   parsePortableSpaceData,
   type PortableSpaceDataV1,
 } from './portableSpaceData';
-import { DEFAULT_SPACE_ID, type StoredStateV7 } from './types';
+import { DEFAULT_SPACE_ID, type StoredStateV8 } from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   return {
@@ -19,8 +19,8 @@ function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
   } as chrome.tabs.Tab;
 }
 
-const state: StoredStateV7 = {
-  version: 7,
+const state: StoredStateV8 = {
+  version: 8,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -41,7 +41,20 @@ const state: StoredStateV7 = {
           homeUrl: 'https://mail.example.com/',
           alias: 'Mail',
           faviconUrl: 'mail.ico',
-          tabId: 2,
+          instances: [
+            {
+              tabId: 2,
+              windowId: 1,
+              lastKnownUrl: 'https://mail.example.com/inbox',
+              lastKnownTitle: 'Inbox',
+            },
+            {
+              tabId: 5,
+              windowId: 2,
+              lastKnownUrl: 'https://mail.example.com/sent',
+              lastKnownTitle: 'Sent',
+            },
+          ],
           lastKnownUrl: 'https://mail.example.com/inbox',
           lastKnownTitle: 'Inbox',
           createdAt: 1,
@@ -66,6 +79,7 @@ const state: StoredStateV7 = {
     '2': DEFAULT_SPACE_ID,
     '3': 'focus',
     '4': DEFAULT_SPACE_ID,
+    '5': DEFAULT_SPACE_ID,
   },
 };
 
@@ -99,6 +113,13 @@ describe('portable space data', () => {
           index: 3,
           title: 'Blank',
           url: 'chrome-extension://fantab/blank.html?space=default',
+        }),
+        tab({
+          id: 5,
+          windowId: 2,
+          index: 0,
+          title: 'Sent',
+          url: 'https://mail.example.com/sent',
         }),
       ],
     });
@@ -182,7 +203,7 @@ describe('portable space data', () => {
     });
 
     expect(imported.state).toMatchObject({
-      version: 7,
+      version: 8,
       activeSpaceByWindowId: {
         default: 'space-1',
       },
@@ -198,7 +219,7 @@ describe('portable space data', () => {
       id: 'pin-1',
       homeUrl: 'https://mail.example.com/',
       alias: 'Mail',
-      tabId: null,
+      instances: [],
       createdAt: 1,
       order: 0,
     });

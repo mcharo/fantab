@@ -8,7 +8,7 @@ import {
 import {
   DEFAULT_SPACE_ID,
   type FantabGroup,
-  type StoredStateV7,
+  type StoredStateV8,
 } from './types';
 
 function tab(overrides: Partial<chrome.tabs.Tab>): chrome.tabs.Tab {
@@ -36,8 +36,8 @@ function fantabGroup(overrides: Partial<FantabGroup>): FantabGroup {
   };
 }
 
-const state: StoredStateV7 = {
-  version: 7,
+const state: StoredStateV8 = {
+  version: 8,
   activeSpaceByWindowId: {
     default: DEFAULT_SPACE_ID,
     '1': DEFAULT_SPACE_ID,
@@ -57,7 +57,14 @@ const state: StoredStateV7 = {
           homeUrl: 'https://mail.example.com/',
           alias: 'Mail',
           faviconUrl: 'mail.ico',
-          tabId: 3,
+          instances: [
+            {
+              tabId: 3,
+              windowId: 1,
+              lastKnownUrl: 'https://mail.example.com/',
+              lastKnownTitle: 'Inbox',
+            },
+          ],
           lastKnownUrl: 'https://mail.example.com/',
           lastKnownTitle: 'Inbox',
           createdAt: 1,
@@ -221,7 +228,7 @@ describe('buildPanelState', () => {
             homePins: [
               {
                 ...state.spaces[0].homePins[0],
-                tabId: null,
+                instances: [],
                 groupId: 'reading',
               },
             ],
@@ -269,7 +276,7 @@ describe('buildPanelState', () => {
         spaces: [
           {
             ...state.spaces[0],
-            homePins: [{ ...state.spaces[0].homePins[0], tabId: null }],
+            homePins: [{ ...state.spaces[0].homePins[0], instances: [] }],
           },
         ],
       },
@@ -390,7 +397,14 @@ describe('buildPanelState', () => {
                 homeUrl: 'https://mail.example.com/',
                 alias: 'Focus Mail',
                 faviconUrl: '',
-                tabId: 3,
+                instances: [
+                  {
+                    tabId: 3,
+                    windowId: 1,
+                    lastKnownUrl: 'https://mail.example.com/',
+                    lastKnownTitle: 'Inbox',
+                  },
+                ],
                 lastKnownUrl: 'https://mail.example.com/',
                 lastKnownTitle: 'Inbox',
                 createdAt: 2,
@@ -446,6 +460,103 @@ describe('buildPanelState', () => {
     expect(withMedia.activeMedia).toEqual(activeMedia);
   });
 
+  it('projects independent instances of one home pin in each window', () => {
+    const multiWindowState: StoredStateV8 = {
+      ...state,
+      activeSpaceByWindowId: {
+        ...state.activeSpaceByWindowId,
+        '2': DEFAULT_SPACE_ID,
+      },
+      spaces: [
+        {
+          ...state.spaces[0],
+          homePins: [
+            {
+              ...state.spaces[0].homePins[0],
+              instances: [
+                ...state.spaces[0].homePins[0].instances,
+                {
+                  tabId: 4,
+                  windowId: 2,
+                  lastKnownUrl: 'https://mail.example.com/archive',
+                  lastKnownTitle: 'Archive',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      tabSpaces: {
+        ...state.tabSpaces,
+        '4': DEFAULT_SPACE_ID,
+      },
+    };
+    const tabs = [
+      tab({
+        id: 3,
+        windowId: 1,
+        title: 'Inbox',
+        url: 'https://mail.example.com/',
+      }),
+      tab({
+        id: 4,
+        windowId: 2,
+        title: 'Archive',
+        url: 'https://mail.example.com/archive',
+      }),
+    ];
+
+    const windowOne = buildPanelState({
+      windowId: 1,
+      state: multiWindowState,
+      tabs,
+    });
+    const windowTwo = buildPanelState({
+      windowId: 2,
+      state: multiWindowState,
+      tabs,
+    });
+
+    expect(windowOne.homePins[0]).toMatchObject({
+      isOpen: true,
+      tabId: 3,
+      windowId: 1,
+    });
+    expect(windowTwo.homePins[0]).toMatchObject({
+      isOpen: true,
+      tabId: 4,
+      windowId: 2,
+    });
+  });
+
+  it('shows a pin as closed only in a window without an instance', () => {
+    const panelState = buildPanelState({
+      windowId: 2,
+      state: {
+        ...state,
+        activeSpaceByWindowId: {
+          ...state.activeSpaceByWindowId,
+          '2': DEFAULT_SPACE_ID,
+        },
+      },
+      tabs: [
+        tab({
+          id: 3,
+          windowId: 1,
+          title: 'Inbox',
+          url: 'https://mail.example.com/',
+        }),
+      ],
+    });
+
+    expect(panelState.homePins[0]).toMatchObject({
+      isOpen: false,
+      tabId: null,
+      windowId: null,
+    });
+    expect(panelState.ungroupedTabs).toHaveLength(0);
+  });
+
   it('uses independent active spaces for different windows', () => {
     const panelState = buildPanelState({
       windowId: 2,
@@ -471,7 +582,7 @@ describe('buildPanelState', () => {
                 homeUrl: 'https://calendar.example.com/',
                 alias: 'Calendar',
                 faviconUrl: '',
-                tabId: null,
+                instances: [],
                 lastKnownUrl: null,
                 lastKnownTitle: null,
                 createdAt: 2,
