@@ -19,7 +19,7 @@
     "@sveltejs/vite-plugin-svelte": "7.0.0",
     "@types/chrome": "0.1.38",
     "svelte": "5.55.1",
-    "typescript": "6.0.2",
+    "typescript": "6.0.3",
     "vite": "8.0.3",
     "vitest": "4.1.2"
   }
