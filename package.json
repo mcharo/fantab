@@ -16,7 +16,7 @@
   "author": "",
   "license": "ISC",
   "devDependencies": {
-    "@sveltejs/vite-plugin-svelte": "7.0.0",
+    "@sveltejs/vite-plugin-svelte": "7.1.2",
     "@types/chrome": "0.1.38",
     "svelte": "5.55.1",
     "typescript": "6.0.2",
