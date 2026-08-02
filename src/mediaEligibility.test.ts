@@ -18,6 +18,7 @@ function candidate(overrides: Partial<VideoCandidate> = {}): VideoCandidate {
     loop: false,
     disablePictureInPicture: false,
     hasAudioBytes: true,
+    audioCounterSupported: true,
     ...overrides,
   };
 }
@@ -32,10 +33,10 @@ describe('rejectVideoReason', () => {
     expect(rejectVideoReason(candidate({ duration: Infinity }))).toBeNull();
   });
 
-  it('accepts a long muted video that has decoded no audio', () => {
+  it('accepts a long muted video once audio has been decoded', () => {
     expect(
       rejectVideoReason(
-        candidate({ muted: true, hasAudioBytes: false, duration: 3600 }),
+        candidate({ muted: true, hasAudioBytes: true, duration: 3600 }),
       ),
     ).toBeNull();
   });
@@ -44,6 +45,52 @@ describe('rejectVideoReason', () => {
     expect(
       rejectVideoReason(candidate({ muted: true, loop: true })),
     ).toBeNull();
+  });
+
+  it('rejects a full-length hover preview with no decoded audio', () => {
+    // Google SERP thumbnails stream the real duration, often unmuted, but never
+    // decode an audio track — previously treated as a muted feature film.
+    expect(
+      rejectVideoReason(
+        candidate({
+          muted: false,
+          hasAudioBytes: false,
+          duration: 101,
+          loop: false,
+        }),
+      ),
+    ).toBe('silent-clip');
+  });
+
+  it('rejects a long muted video that has never decoded audio', () => {
+    expect(
+      rejectVideoReason(
+        candidate({ muted: true, hasAudioBytes: false, duration: 3600 }),
+      ),
+    ).toBe('silent-clip');
+  });
+
+  it('falls back to muted short/loop rules when the audio counter is unavailable', () => {
+    expect(
+      rejectVideoReason(
+        candidate({
+          audioCounterSupported: false,
+          muted: true,
+          hasAudioBytes: false,
+          duration: 3600,
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      rejectVideoReason(
+        candidate({
+          audioCounterSupported: false,
+          muted: true,
+          hasAudioBytes: false,
+          duration: 6,
+        }),
+      ),
+    ).toBe('silent-clip');
   });
 
   it('rejects a video that has not loaded a frame', () => {

@@ -1,10 +1,11 @@
 // Which <video> elements count as "the video on this page".
 //
 // Pages are full of videos that are not the one the user is watching: Google
-// result-page hover previews, muted ambient loops behind hero images, tiny
-// thumbnails, offscreen players kept warm by a carousel. Treating those as real
-// media makes the tab claim the player bar, lights up the video/PiP buttons, and
-// hands the mirror a source it can do nothing with.
+// result-page hover previews (full duration, often unmuted, no audio track),
+// muted ambient loops behind hero images, tiny thumbnails, offscreen players
+// kept warm by a carousel. Treating those as real media makes the tab claim the
+// player bar, lights up the video/PiP buttons, and hands the mirror a source it
+// can do nothing with.
 //
 // This module is imported only by the content script (and its tests) so Rollup
 // folds it into the content-script entry rather than emitting a shared chunk,
@@ -34,6 +35,11 @@ export interface VideoCandidate {
   disablePictureInPicture: boolean;
   /** Whether the element has decoded any audio (Chrome-only counter). */
   hasAudioBytes: boolean;
+  /**
+   * Whether `webkitAudioDecodedByteCount` exists on the element. When false,
+   * callers fall back to muted short/loop heuristics (non-Chromium).
+   */
+  audioCounterSupported: boolean;
 }
 
 export type VideoRejection =
@@ -79,19 +85,21 @@ export function rejectVideoReason(
   // previews, background loops) or would reject the PiP request anyway.
   if (candidate.disablePictureInPicture) return 'pip-disabled';
 
-  // A muted video that has never decoded audio is either decorative or a
-  // preview. The loop/short-duration conjunct is what keeps a deliberately
-  // muted feature-length video eligible.
+  // No decoded audio ⇒ decorative loop, hover preview, or a silent source.
+  // Chromium exposes webkitAudioDecodedByteCount even while muted, so a real
+  // player (YouTube watched muted, etc.) clears this once audio has decoded.
+  // Google SERP hover previews stream the full duration, often unmuted, but
+  // never produce audio bytes — that used to look like a feature film.
+  //
+  // Without the counter (non-Chromium), fall back to muted short/loop only so
+  // we don't reject every video.
   const isShort =
     Number.isFinite(candidate.duration) &&
     candidate.duration > 0 &&
     candidate.duration <= MAX_PREVIEW_SECONDS;
-  if (
-    candidate.muted &&
-    !candidate.hasAudioBytes &&
-    (candidate.loop || isShort)
-  ) {
-    return 'silent-clip';
+  if (!candidate.hasAudioBytes) {
+    if (candidate.audioCounterSupported) return 'silent-clip';
+    if (candidate.muted && (candidate.loop || isShort)) return 'silent-clip';
   }
 
   return null;

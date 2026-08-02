@@ -329,18 +329,19 @@
           return false;
         }
 
-        const decodedAudioBytes =
-          (video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
-            .webkitAudioDecodedByteCount ?? 0;
+        // Keep in sync with rejectVideoReason in src/mediaEligibility.ts.
+        const audioCounterSupported = 'webkitAudioDecodedByteCount' in video;
+        const decodedAudioBytes = audioCounterSupported
+          ? ((video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
+              .webkitAudioDecodedByteCount ?? 0)
+          : 0;
+        if (decodedAudioBytes > 0) return true;
+        if (audioCounterSupported) return false;
         const isShort =
           Number.isFinite(video.duration) &&
           video.duration > 0 &&
           video.duration <= 12;
-        return !(
-          video.muted &&
-          decodedAudioBytes === 0 &&
-          (video.loop || isShort)
-        );
+        return !(video.muted && (video.loop || isShort));
       };
 
       const ready = Array.from(document.querySelectorAll('video')).filter(

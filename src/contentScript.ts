@@ -420,9 +420,11 @@ import type { VideoMirrorSignal } from './videoMirror';
   function describeVideo(video: HTMLVideoElement): VideoCandidate {
     const rect = video.getBoundingClientRect();
     const style = window.getComputedStyle(video);
-    const decodedAudioBytes =
-      (video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
-        .webkitAudioDecodedByteCount ?? 0;
+    const audioCounterSupported = 'webkitAudioDecodedByteCount' in video;
+    const decodedAudioBytes = audioCounterSupported
+      ? ((video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
+          .webkitAudioDecodedByteCount ?? 0)
+      : 0;
 
     return {
       readyState: video.readyState,
@@ -439,6 +441,7 @@ import type { VideoMirrorSignal } from './videoMirror';
       loop: video.loop,
       disablePictureInPicture: video.disablePictureInPicture,
       hasAudioBytes: decodedAudioBytes > 0,
+      audioCounterSupported,
     };
   }
 
