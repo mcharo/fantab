@@ -53,8 +53,8 @@ export interface Preferences {
    */
   showPlayerControls: boolean;
   /**
-   * Logs every `<video>` a page exposes, and why each one was accepted or
-   * rejected as a real player, to that page's console. For tuning the detection
+   * Logs every `<audio>`/`<video>` a page exposes, and why each one was
+   * accepted or rejected as real media, to that page's console. For tuning the detection
    * thresholds against sites that misbehave. Machine-local (not synced).
    */
   mediaDebugLogging: boolean;

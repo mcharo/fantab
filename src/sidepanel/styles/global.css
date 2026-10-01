@@ -1,3 +1,11 @@
+/* A tab row's opaque surface (see TabRow.svelte). Registered as a color so it
+   can transition along with the row's background. */
+@property --row-bg {
+  syntax: '<color>';
+  inherits: true;
+  initial-value: transparent;
+}
+
 :root {
   color-scheme: light;
   --bg-primary: #fff;

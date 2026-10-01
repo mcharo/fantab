@@ -5,6 +5,7 @@ import type {
   MediaStateChangedMessage,
   Message,
   OpenExternalLinkFromHomePinResponse,
+  RequestMediaReportMessage,
   RequestMessage,
 } from './messaging';
 import {
@@ -225,11 +226,13 @@ async function applyMediaUpdate(
   void broadcastPanelState();
 }
 
-async function evictMediaTab(tabId: number): Promise<void> {
+/** Drop a tab's media record. Resolves to whether there was one. */
+async function evictMediaTab(tabId: number): Promise<boolean> {
   await mediaRegistryHydrated;
-  if (!mediaRegistry.remove(tabId)) return;
+  if (!mediaRegistry.remove(tabId)) return false;
   persistMediaRegistry();
   broadcastSoon();
+  return true;
 }
 
 interface CopyToClipboardResponse {
@@ -309,7 +312,8 @@ async function getPanelState(
     state,
     windowId,
     blankUrl: placeholderUrl(),
-    playingVideoTabIds: mediaRegistry.playingVideoTabIds(),
+    videoTabIds: mediaRegistry.videoTabIds(),
+    mediaPlaybackByTabId: mediaRegistry.playbackByTabId(),
     activeMedia: resolveActiveMedia(allTabs, state, windowId),
   });
 }
@@ -363,6 +367,16 @@ function resolveActiveMedia(
   dirty = mediaRegistry.select(windowId, null) || dirty;
   if (dirty) persistMediaRegistry();
   return null;
+}
+
+function requestMediaReport(tabId: number): void {
+  const message: RequestMediaReportMessage = {
+    action: 'REQUEST_MEDIA_REPORT',
+    payload: {},
+  };
+  chrome.tabs.sendMessage(tabId, message).catch(() => {
+    // No content script on this page (restricted URL, still loading).
+  });
 }
 
 function isMediaStateChangedMessage(
@@ -2651,9 +2665,15 @@ chrome.tabs.onReplaced.addListener((addedTabId, removedTabId) => {
   void handleTabReplaced(addedTabId, removedTabId);
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  // A navigation invalidates the previous page's media report; the fresh page's
-  // content script re-reports once it plays again.
-  if (changeInfo.url) void evictMediaTab(tabId);
+  // A navigation invalidates the previous page's media report. A new document
+  // reports on its own, but a same-document (SPA) navigation keeps the old
+  // content script, which only re-reports on change — so ask it to, or a site
+  // that keeps playing across pages (Spotify, YouTube Music) would drop out.
+  if (changeInfo.url) {
+    void evictMediaTab(tabId).then((evicted) => {
+      if (evicted) requestMediaReport(tabId);
+    });
+  }
   broadcastSoon();
   void runStartupReattach();
 });

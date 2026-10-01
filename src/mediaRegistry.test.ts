@@ -11,7 +11,6 @@ function mediaState(overrides: Partial<TabMediaState> = {}): TabMediaState {
   return {
     hasMedia: true,
     isPlaying: true,
-    isPlayingVideo: false,
     hasVideo: false,
     canNext: false,
     canPrev: false,
@@ -254,13 +253,27 @@ describe('MediaRegistry', () => {
     expect(registry.getSelection(1)).toBeNull();
   });
 
-  it('exposes tabs with a currently-playing video for the row buttons', () => {
+  it('exposes tabs with a video, playing or paused, for the row buttons', () => {
     const registry = new MediaRegistry();
-    registry.update(1, 1, mediaState({ isPlayingVideo: true }));
-    registry.update(2, 1, mediaState({ isPlayingVideo: false }));
-    registry.update(3, 1, mediaState({ isPlayingVideo: true }));
+    registry.update(1, 1, mediaState({ hasVideo: true, isPlaying: true }));
+    registry.update(2, 1, mediaState({ hasVideo: false }));
+    registry.update(3, 1, mediaState({ hasVideo: true, isPlaying: false }));
 
-    expect(registry.playingVideoTabIds()).toEqual(new Set([1, 3]));
+    expect(registry.videoTabIds()).toEqual(new Set([1, 3]));
+  });
+
+  it('exposes each media tab\'s playback for the row play/pause buttons', () => {
+    const registry = new MediaRegistry();
+    registry.update(1, 1, mediaState({ isPlaying: true }));
+    registry.update(2, 1, mediaState({ isPlaying: false }));
+    registry.update(3, 1, mediaState({ hasMedia: false }));
+
+    expect(registry.playbackByTabId()).toEqual(
+      new Map([
+        [1, 'playing'],
+        [2, 'paused'],
+      ]),
+    );
   });
 });
 

@@ -134,7 +134,17 @@ export interface PanelTab {
   isActive: boolean;
   isAudible: boolean;
   isMuted: boolean;
-  isPlayingVideo: boolean;
+  /**
+   * The tab has a video that can go picture-in-picture, playing or paused.
+   * Doesn't follow playback, so pausing doesn't reshuffle the row's controls.
+   */
+  hasVideo: boolean;
+  /**
+   * Playback of the tab's media, when it has any the user is consuming (see
+   * src/mediaEligibility.ts); null for no media or only incidental media. Drives
+   * the row's hover play/pause button.
+   */
+  mediaPlayback: MediaPlayback | null;
   isNativePinned: boolean;
   isHomePin: boolean;
   isOpen: boolean;
@@ -147,19 +157,26 @@ export interface PanelTab {
   lastAccessed: number;
 }
 
+export type MediaPlayback = 'playing' | 'paused';
+
+/** Transport actions the side panel can ask a tab's content script to run. */
+export type MediaCommand = 'play' | 'pause' | 'nexttrack' | 'previoustrack';
+
 /**
  * Snapshot of a tab's media playback, reported by the content script. Combines
  * DOM media-element facts (volume, muted, playing video) with the page's
  * MediaSession capabilities (next/previous track) relayed by the media bridge.
  */
 export interface TabMediaState {
-  /** Any audio/video element is present, or the page exposes a media session. */
+  /**
+   * The page has media the user is consuming: an element they've heard or
+   * started, or a media session standing in for one. Incidental media (muted
+   * previews, unplayed or short clips) doesn't count.
+   */
   hasMedia: boolean;
   /** Something (audio or video) is actively playing. */
   isPlaying: boolean;
-  /** A `<video>` element is currently playing (drives the picture-in-picture button). */
-  isPlayingVideo: boolean;
-  /** A ready `<video>` element exists, so picture-in-picture can be offered. */
+  /** A visible, ready `<video>` exists, so picture-in-picture can be offered. */
   hasVideo: boolean;
   /** The site registered a MediaSession `nexttrack` handler. */
   canNext: boolean;

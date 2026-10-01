@@ -460,6 +460,30 @@ describe('buildPanelState', () => {
     expect(withMedia.activeMedia).toEqual(activeMedia);
   });
 
+  it('marks open tabs with their media playback, leaving the rest null', () => {
+    const result = buildPanelState({
+      windowId: 1,
+      state,
+      tabs: [
+        tab({ id: 1, index: 0, url: 'https://docs.example.com/' }),
+        tab({ id: 2, index: 1, url: 'https://music.example.com/' }),
+        tab({ id: 3, index: 2, url: 'https://mail.example.com/' }),
+      ],
+      mediaPlaybackByTabId: new Map([
+        [2, 'playing'],
+        [3, 'paused'],
+      ]),
+    });
+
+    const playback = (tabId: number) =>
+      [...result.homePins, ...result.ungroupedTabs].find(
+        (row) => row.tabId === tabId,
+      )?.mediaPlayback;
+    expect(playback(1)).toBeNull();
+    expect(playback(2)).toBe('playing');
+    expect(playback(3)).toBe('paused');
+  });
+
   it('projects independent instances of one home pin in each window', () => {
     const multiWindowState: StoredStateV8 = {
       ...state,

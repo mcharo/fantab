@@ -38,9 +38,9 @@
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
     onTogglePiP: (tabId: number) => void;
+    onTogglePlayback: (tabId: number, playing: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
-    onRemoveHomePin: (homePinId: string) => void;
     onGoHome: (homePinId: string) => void;
     onContextMenu: (tab: PanelTab, x: number, y: number) => void;
     onGroupContextMenu: (group: PanelGroup, x: number, y: number) => void;
@@ -84,9 +84,9 @@
     onClose,
     onToggleMute,
     onTogglePiP,
+    onTogglePlayback,
     onRename,
     onCreateHomePin,
-    onRemoveHomePin,
     onGoHome,
     onContextMenu,
     onGroupContextMenu,
@@ -232,9 +232,9 @@
     {onClose}
     {onToggleMute}
     {onTogglePiP}
+    {onTogglePlayback}
     {onRename}
     {onCreateHomePin}
-    {onRemoveHomePin}
     {onGoHome}
     {onContextMenu}
     {onReorder}

@@ -326,6 +326,16 @@ export interface MediaStateChangedMessage {
   payload: { state: TabMediaState };
 }
 
+/**
+ * Background -> content script: report the tab's media state now, even if it
+ * hasn't changed since the last report. Sent after the background drops a tab's
+ * media record on a URL change.
+ */
+export interface RequestMediaReportMessage {
+  action: 'REQUEST_MEDIA_REPORT';
+  payload: Record<string, never>;
+}
+
 export interface UrlCopiedMessage {
   action: 'URL_COPIED';
   payload: { tabId: number };

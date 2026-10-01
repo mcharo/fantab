@@ -303,12 +303,12 @@
       <label class="toggle-row">
         <span class="toggle-text">
           <span class="toggle-title">
-            Log video detection
+            Log media detection
             <span class="tag">Debug</span>
           </span>
           <span class="toggle-hint">
-            Print every video a page exposes, and why it was accepted or
-            rejected, to that page's console.
+            Print every audio and video element a page exposes, and why it was
+            accepted or rejected, to that page's console.
           </span>
         </span>
         <input

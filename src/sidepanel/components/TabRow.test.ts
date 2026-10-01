@@ -4,7 +4,7 @@ import source from './TabRow.svelte?raw';
 describe('TabRow layout', () => {
   it('places the audio indicator immediately after the tab title', () => {
     const titleIndex = source.indexOf('<div class="title-line">');
-    const audioIndex = source.indexOf('class="audio-btn"');
+    const audioIndex = source.indexOf('class="audio-status"');
     const toolsIndex = source.indexOf('<div class="tools">');
 
     expect(titleIndex).toBeGreaterThan(-1);

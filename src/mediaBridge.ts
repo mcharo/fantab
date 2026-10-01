@@ -5,10 +5,13 @@
 // supports (next/previous track, play, pause) and invoke them on demand, and it
 // relays the session's metadata/playback state to the content script via
 // `window.postMessage`. MAIN-world scripts have no access to chrome.* APIs, so
-// postMessage is the only channel back to the extension.
+// postMessage is the only channel to and from the extension: snapshots go out on
+// CHANNEL, and the content script sends transport commands on COMMAND_CHANNEL.
 
 (() => {
   const CHANNEL = 'fantab-media-bridge';
+  // Mirror of MEDIA_COMMAND_CHANNEL in ./contentScript. Update both together.
+  const COMMAND_CHANNEL = 'fantab-media-command';
 
   interface MediaBridgeSnapshot {
     hasSession: boolean;
@@ -28,14 +31,33 @@
   }
 
   const scope = window as Window &
-    typeof globalThis & { __fantabMedia?: FantabMediaBridge };
+    typeof globalThis & {
+      __fantabMedia?: FantabMediaBridge;
+      __fantabMediaCommands?: true;
+    };
 
   const session = navigator.mediaSession;
   if (!session || typeof session.setActionHandler !== 'function') return;
 
+  // Run commands the content script posts. Installed once per page, and also
+  // on re-injection, since a bridge left by an older version may predate it.
+  function listenForCommands(bridge: FantabMediaBridge): void {
+    if (scope.__fantabMediaCommands) return;
+    scope.__fantabMediaCommands = true;
+
+    window.addEventListener('message', (event: MessageEvent) => {
+      if (event.source !== window) return;
+      const data = event.data as { source?: unknown; action?: unknown } | null;
+      if (!data || data.source !== COMMAND_CHANNEL) return;
+      if (typeof data.action !== 'string') return;
+      bridge.invoke(data.action);
+    });
+  }
+
   // Re-injection after an extension update: keep the existing capture (it may
   // already hold handlers the page registered before this run) and just refresh.
   if (scope.__fantabMedia?.installed) {
+    listenForCommands(scope.__fantabMedia);
     scope.__fantabMedia.postSnapshot();
     return;
   }
@@ -103,6 +125,7 @@
   }
 
   scope.__fantabMedia = { installed: true, invoke, postSnapshot };
+  listenForCommands(scope.__fantabMedia);
 
   // Sites update metadata/playbackState without calling setActionHandler (and
   // there's no event we can observe for it here), so poll lightly and post only

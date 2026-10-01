@@ -20,9 +20,9 @@
     onClose: (tabId: number) => void;
     onToggleMute: (tabId: number, muted: boolean) => void;
     onTogglePiP: (tabId: number) => void;
+    onTogglePlayback: (tabId: number, playing: boolean) => void;
     onRename: (tab: PanelTab, alias: string) => void;
     onCreateHomePin: (tabId: number) => void;
-    onRemoveHomePin: (homePinId: string) => void;
     onGoHome: (homePinId: string) => void;
     onContextMenu: (tab: PanelTab, x: number, y: number) => void;
     onReorder: (
@@ -42,9 +42,9 @@
     onClose,
     onToggleMute,
     onTogglePiP,
+    onTogglePlayback,
     onRename,
     onCreateHomePin,
-    onRemoveHomePin,
     onGoHome,
     onContextMenu,
     onReorder,
@@ -85,6 +85,44 @@
 
   const canGoHome = $derived(tab.isHomePin && tab.isOpen && !tab.atHome);
   const canClose = $derived(tab.isOpen && tab.tabId !== null);
+  const canPin = $derived(!tab.isHomePin && tab.tabId !== null);
+  // An open pin's home button: back to the home URL when it has wandered off,
+  // or a reload when it's already there (for pages that update through the day).
+  const homeAction = $derived(
+    tab.isHomePin && tab.isOpen && tab.homePinId
+      ? tab.atHome
+        ? 'reload'
+        : 'return'
+      : null,
+  );
+
+  // At rest a row shows status only; its actions live in the hover tray. Media
+  // controls are grouped in their own capsule, kept apart from the tab's.
+  const isSounding = $derived(tab.isAudible && !tab.isMuted);
+  const audioStatus = $derived(
+    tab.tabId === null
+      ? null
+      : isSounding
+        ? 'sounding'
+        : tab.isMuted && (tab.isAudible || tab.mediaPlayback)
+          ? 'muted'
+          : null,
+  );
+  const canPlayPause = $derived(tab.mediaPlayback !== null && tab.tabId !== null);
+  // The capsule's buttons follow what the tab has, not what it's doing right
+  // now: pausing must only swap the play/pause icon. If PiP and mute dropped out
+  // with playback (and Chrome's audible flag lags ~2s), the capsule would shrink
+  // and slide play/pause out from under the cursor.
+  const canPiP = $derived(tab.hasVideo && tab.tabId !== null);
+  const canMute = $derived(
+    tab.isOpen &&
+      tab.tabId !== null &&
+      (tab.isAudible || tab.isMuted || tab.mediaPlayback !== null),
+  );
+  const hasMediaControls = $derived(canPlayPause || canPiP || canMute);
+  const hasTools = $derived(
+    hasMediaControls || homeAction !== null || canPin || canClose,
+  );
   const proxiedFaviconUrl = $derived(safeFaviconUrl(tab.url));
 
   let faviconMode = $state<'direct' | 'proxy' | 'fallback'>('proxy');
@@ -220,14 +258,6 @@
     onActivate(tab);
   }
 
-  function reloadPinnedUrl(event: MouseEvent) {
-    event.stopPropagation();
-    if (!tab.homePinId) return;
-
-    if (tab.isOpen) onGoHome(tab.homePinId);
-    else onActivate(tab);
-  }
-
 </script>
 
 <div
@@ -286,86 +316,107 @@
         onSave={(alias) => onRename(tab, alias)}
         className="tab-name"
       />
-      {#if tab.isAudible && tab.tabId !== null}
-        <button
-          class="audio-btn"
-          class:muted={tab.isMuted}
-          onclick={(event) => {
-            event.stopPropagation();
-            onToggleMute(tab.tabId!, !tab.isMuted);
-            (event.currentTarget as HTMLButtonElement).blur();
-          }}
-          title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
-        >
-          {#if tab.isMuted}
-            <Icon name="volume-x" size={15} />
-          {:else}
-            <span class="audio-dot"></span>
-          {/if}
-        </button>
+      {#if audioStatus === 'sounding'}
+        <span class="audio-status" role="img" aria-label="Playing audio">
+          <span class="eq"><span></span><span></span><span></span></span>
+        </span>
+      {:else if audioStatus === 'muted'}
+        <span class="audio-status" role="img" aria-label="Muted">
+          <Icon name="volume-x" size={14} />
+        </span>
       {/if}
     </div>
   </div>
 
-  <div class="tools">
-    {#if tab.isPlayingVideo && tab.tabId !== null}
-      <button
-        class="tool-btn"
-        onclick={(event) => {
-          event.stopPropagation();
-          onTogglePiP(tab.tabId!);
-          (event.currentTarget as HTMLButtonElement).blur();
-        }}
-        title="Picture-in-picture"
-      >
-        <Icon name="pip" size={15} />
-      </button>
-    {/if}
+  {#if hasTools}
+    <div class="tools">
+      {#if hasMediaControls}
+        <div class="media" class:sounding={isSounding} role="group" aria-label="Media">
+          {#if canPlayPause}
+            {@const playing = tab.mediaPlayback === 'playing'}
+            <button
+              class="tool-btn primary"
+              onclick={(event) => {
+                event.stopPropagation();
+                onTogglePlayback(tab.tabId!, playing);
+              }}
+              title={playing ? 'Pause' : 'Play'}
+              aria-label={playing ? 'Pause' : 'Play'}
+            >
+              <Icon name={playing ? 'pause' : 'play'} size={14} />
+            </button>
+          {/if}
+          {#if canPiP}
+            <button
+              class="tool-btn"
+              onclick={(event) => {
+                event.stopPropagation();
+                onTogglePiP(tab.tabId!);
+              }}
+              title="Picture-in-picture"
+              aria-label="Picture-in-picture"
+            >
+              <Icon name="pip" size={15} />
+            </button>
+          {/if}
+          {#if canMute}
+            <button
+              class="tool-btn"
+              onclick={(event) => {
+                event.stopPropagation();
+                onToggleMute(tab.tabId!, !tab.isMuted);
+              }}
+              title={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
+              aria-label={tab.isMuted ? 'Unmute tab' : 'Mute tab'}
+            >
+              <Icon name={tab.isMuted ? 'volume-x' : 'volume-2'} size={15} />
+            </button>
+          {/if}
+        </div>
+      {/if}
 
-    {#if tab.isHomePin && tab.homePinId}
-      <button
-        class="tool-btn"
-        onclick={reloadPinnedUrl}
-        title={tab.isOpen ? 'Reload pinned URL' : 'Open pinned URL'}
-      >
-        <Icon name="refresh" size={14} />
-      </button>
-      <button
-        class="tool-btn"
-        onclick={(event) => {
-          event.stopPropagation();
-          onRemoveHomePin(tab.homePinId!);
-        }}
-        title="Remove home pin"
-      >
-        <Icon name="pin-off" size={11} />
-      </button>
-    {:else if tab.tabId !== null}
-      <button
-        class="tool-btn"
-        onclick={(event) => {
-          event.stopPropagation();
-          onCreateHomePin(tab.tabId!);
-        }}
-        title="Pin as home"
-      >
-        <Icon name="pin" size={11} />
-      </button>
-    {/if}
+      {#if homeAction}
+        {@const label = homeAction === 'reload' ? 'Reload' : 'Return to home URL'}
+        <button
+          class="tool-btn"
+          onclick={(event) => {
+            event.stopPropagation();
+            onGoHome(tab.homePinId!);
+          }}
+          title={label}
+          aria-label={label}
+        >
+          <Icon name={homeAction === 'reload' ? 'refresh' : 'house'} size={14} />
+        </button>
+      {:else if canPin}
+        <button
+          class="tool-btn"
+          onclick={(event) => {
+            event.stopPropagation();
+            onCreateHomePin(tab.tabId!);
+          }}
+          title="Pin as home"
+          aria-label="Pin as home"
+        >
+          <Icon name="pin" size={14} />
+        </button>
+      {/if}
 
-    {#if canClose}
-      <button
-        class="tool-btn"
-        onclick={(event) => {
-          event.stopPropagation();
-          onClose(tab.tabId!);
-        }}
-        title="Close tab"
-      >
-        <Icon name="x" size={15} />
-      </button>
-    {/if}
-  </div>
+      {#if canClose}
+        <button
+          class="tool-btn"
+          onclick={(event) => {
+            event.stopPropagation();
+            onClose(tab.tabId!);
+          }}
+          title="Close tab"
+          aria-label="Close tab"
+        >
+          <Icon name="x" size={15} />
+        </button>
+      {/if}
+    </div>
+  {/if}
 
   {#if copied}
     <span class="copied-badge" aria-hidden="true">
@@ -376,7 +427,11 @@
 </div>
 
 <style>
+  /* --row-bg is the row's opaque surface, which the hover tray paints over the
+     end of the title. It's a registered <color> (see global.css) so it fades in
+     step with the row's own background. */
   .tab-row {
+    --row-bg: var(--bg-primary);
     position: relative;
     display: flex;
     align-items: center;
@@ -387,15 +442,18 @@
     cursor: default;
     transition:
       background 0.15s,
+      --row-bg 0.15s,
       opacity 0.15s;
   }
 
   .tab-row:hover,
   .tab-row.selected {
+    --row-bg: var(--bg-secondary);
     background: var(--bg-secondary);
   }
 
   .tab-row.active {
+    --row-bg: var(--active-bg);
     background: var(--active-bg);
   }
 
@@ -559,17 +617,121 @@
     min-width: 0;
   }
 
-  .tools {
+  /* Status at rest: one glyph after the title, nothing reserved for buttons.
+     It hands over to the tray on hover, whose media capsule carries the same
+     state. */
+  .audio-status {
+    flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    color: var(--text-secondary);
+    transition: opacity 0.12s;
+  }
+
+  .eq {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 11px;
+  }
+
+  .eq span {
+    width: 2.5px;
+    height: 100%;
+    border-radius: 1px;
+    background: var(--success-color);
+    transform-origin: bottom;
+    animation: eq-bounce 1.1s ease-in-out infinite;
+  }
+
+  .eq span:nth-child(2) {
+    animation-duration: 0.85s;
+    animation-delay: -0.4s;
+  }
+
+  .eq span:nth-child(3) {
+    animation-duration: 1.3s;
+    animation-delay: -0.75s;
+  }
+
+  @keyframes eq-bounce {
+    0%,
+    100% {
+      transform: scaleY(0.35);
+    }
+    50% {
+      transform: scaleY(1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .eq span {
+      animation: none;
+      transform: scaleY(0.55);
+    }
+
+    .eq span:nth-child(2) {
+      transform: scaleY(1);
+    }
+
+    .eq span:nth-child(3) {
+      transform: scaleY(0.75);
+    }
+  }
+
+  /* The hover tray floats over the end of the title instead of reserving
+     space, so titles use the full row at rest. Close is always the rightmost
+     button. Mouse focus doesn't keep it open; keyboard focus does. */
+  .tools {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: 2px;
+    background: var(--row-bg);
     opacity: 0;
-    transition: opacity 0.15s;
+    visibility: hidden;
+    transform: translateY(-50%);
+    transition:
+      opacity 0.12s,
+      visibility 0.12s;
+  }
+
+  /* Fade the title out under the tray. Clicks here still reach the row. */
+  .tools::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 100%;
+    bottom: 0;
+    width: 28px;
+    background: linear-gradient(to right, transparent, var(--row-bg));
+    pointer-events: none;
   }
 
   .tab-row:hover .tools,
-  .tab-row:focus-within .tools {
+  .tab-row:focus-visible .tools,
+  .tab-row:has(.tools :focus-visible) .tools {
     opacity: 1;
+    visibility: visible;
+  }
+
+  .tab-row:hover .audio-status,
+  .tab-row:focus-visible .audio-status,
+  .tab-row:has(.tools :focus-visible) .audio-status {
+    opacity: 0;
+  }
+
+  /* Renaming: the tray would sit on top of the end of the input. */
+  .tab-row:has(.title-line :global(input)) .tools {
+    opacity: 0;
+    visibility: hidden;
   }
 
   .tool-btn {
@@ -580,7 +742,6 @@
     justify-content: center;
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 14px;
   }
 
   .tool-btn:hover {
@@ -588,26 +749,35 @@
     color: var(--text-primary);
   }
 
-  .audio-btn {
-    flex: 0 0 24px;
+  .tool-btn:focus-visible {
+    outline: 2px solid var(--accent-color);
+    outline-offset: -2px;
+  }
+
+  /* Media controls share a capsule, tinted green while the tab is making
+     sound — the equalizer's color, so the glyph reads as having opened up. */
+  .media {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    border-radius: var(--radius-sm);
-    color: var(--text-secondary);
+    margin-right: 4px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-primary) 7%, var(--row-bg));
   }
 
-  .audio-btn:hover {
-    background: var(--bg-hover);
+  .media.sounding {
+    background: color-mix(in srgb, var(--success-color) 20%, var(--row-bg));
+  }
+
+  .media .tool-btn {
+    width: 26px;
+    border-radius: 999px;
+  }
+
+  .media .tool-btn:hover {
+    background: color-mix(in srgb, var(--text-primary) 10%, transparent);
+  }
+
+  .media .tool-btn.primary {
     color: var(--text-primary);
-  }
-
-  .audio-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--success-color);
   }
 </style>

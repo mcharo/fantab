@@ -1,4 +1,4 @@
-import type { ActiveMedia, TabMediaState } from './types';
+import type { ActiveMedia, MediaPlayback, TabMediaState } from './types';
 
 export interface MediaTabRecord {
   windowId: number | null;
@@ -143,7 +143,6 @@ function mediaStateEqual(a: TabMediaState, b: TabMediaState): boolean {
   return (
     a.hasMedia === b.hasMedia &&
     a.isPlaying === b.isPlaying &&
-    a.isPlayingVideo === b.isPlayingVideo &&
     a.hasVideo === b.hasVideo &&
     a.canNext === b.canNext &&
     a.canPrev === b.canPrev &&
@@ -225,13 +224,22 @@ export class MediaRegistry {
     return this.records;
   }
 
-  /** Tab ids with a currently-playing video, for the per-row picture-in-picture button. */
-  playingVideoTabIds(): Set<number> {
+  /** Tab ids with a video, for the per-row picture-in-picture button. */
+  videoTabIds(): Set<number> {
     const ids = new Set<number>();
     for (const [tabId, record] of this.records) {
-      if (record.state.isPlayingVideo) ids.add(tabId);
+      if (record.state.hasVideo) ids.add(tabId);
     }
     return ids;
+  }
+
+  /** Playback of every tab with media, for the per-row play/pause button. */
+  playbackByTabId(): Map<number, MediaPlayback> {
+    const playback = new Map<number, MediaPlayback>();
+    for (const [tabId, record] of this.records) {
+      playback.set(tabId, record.state.isPlaying ? 'playing' : 'paused');
+    }
+    return playback;
   }
 
   /**

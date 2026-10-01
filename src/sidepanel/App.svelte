@@ -19,6 +19,7 @@
   } from '../preferences';
   import {
     DEFAULT_SPACE_ID,
+    type MediaCommand,
     type PanelGroup,
     type PanelState,
     type PanelTab,
@@ -290,9 +291,20 @@
     await sendMessage({ action: 'GET_PANEL_STATE', payload: {} });
   }
 
-  // Injected into the target tab. Toggles native picture-in-picture for the
-  // most prominent playing video (falls back to the largest ready video).
-  // Must stay self-contained — it's serialized and run in the page.
+  // Media controls run through the content script's handle in the extension's
+  // isolated world (see ContentScriptHandle in src/contentScript.ts), so they
+  // act on the same media the tab reported rather than re-deriving it here. We
+  // reach the handle with executeScript, not a message, so the click's user
+  // activation carries into the page: play() and requestPictureInPicture() can
+  // need it. The *InPage functions are serialized into the tab, so each must
+  // stay self-contained.
+  type ContentScriptMediaHandle = {
+    runMediaCommand?: (command: MediaCommand) => boolean;
+    setMediaVolume?: (volume: number, muted: boolean) => boolean;
+    pictureInPictureTarget?: () => HTMLVideoElement | null;
+  };
+
+  // Toggles native picture-in-picture for the tab's main video.
   function requestPictureInPictureInPage(): void {
     try {
       if (document.pictureInPictureElement) {
@@ -300,58 +312,10 @@
         return;
       }
 
-      // Rank by the on-screen rendered area, not intrinsic resolution: streaming
-      // pages (e.g. Hulu) keep small "live"/promo videos around that can be high
-      // res but render tiny, and we want the big player the user is watching.
-      const renderedArea = (video: HTMLVideoElement): number => {
-        const rect = video.getBoundingClientRect();
-        const area = rect.width * rect.height;
-        return area > 0 ? area : video.videoWidth * video.videoHeight;
-      };
-
-      // Compact mirror of rejectVideoReason in src/mediaEligibility.ts, minus
-      // the disablePictureInPicture rule (cleared below for the chosen target).
-      // Keep the thresholds in sync; this function is serialized into the page
-      // so it can't import the shared module.
-      const isEligible = (video: HTMLVideoElement): boolean => {
-        if (video.readyState < 2) return false;
-        if (video.videoWidth <= 0 || video.videoHeight <= 0) return false;
-
-        const rect = video.getBoundingClientRect();
-        if (rect.width < 200 || rect.height < 120) return false;
-
-        const style = window.getComputedStyle(video);
-        if (
-          style.display === 'none' ||
-          style.visibility === 'hidden' ||
-          Number(style.opacity) === 0
-        ) {
-          return false;
-        }
-
-        // Keep in sync with rejectVideoReason in src/mediaEligibility.ts.
-        const audioCounterSupported = 'webkitAudioDecodedByteCount' in video;
-        const decodedAudioBytes = audioCounterSupported
-          ? ((video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
-              .webkitAudioDecodedByteCount ?? 0)
-          : 0;
-        if (decodedAudioBytes > 0) return true;
-        if (audioCounterSupported) return false;
-        const isShort =
-          Number.isFinite(video.duration) &&
-          video.duration > 0 &&
-          video.duration <= 12;
-        return !(video.muted && (video.loop || isShort));
-      };
-
-      const ready = Array.from(document.querySelectorAll('video')).filter(
-        isEligible,
-      );
-      const playing = ready.filter((video) => !video.paused && !video.ended);
-      const target = (playing.length > 0 ? playing : ready).sort(
-        (a, b) => renderedArea(b) - renderedArea(a),
-      )[0];
-
+      const handle = (
+        window as unknown as { __fantabContentScript?: ContentScriptMediaHandle }
+      ).__fantabContentScript;
+      const target = handle?.pictureInPictureTarget?.();
       if (!target || typeof target.requestPictureInPicture !== 'function') return;
 
       // Hulu/Disney+ set disablePictureInPicture on their main player, which
@@ -366,108 +330,67 @@
     }
   }
 
-  function togglePictureInPicture(tabId: number): void {
-    // Inject synchronously from the click so the side panel's transient user
-    // activation carries into the page; requestPictureInPicture() requires a
-    // user gesture, and routing through the async background channel drops it.
-    // Top frame only: matches where we detect video, and avoids a promo video in
-    // another frame racing for the single PiP slot.
-    chrome.scripting
-      .executeScript({
-        target: { tabId },
-        func: requestPictureInPictureInPage,
-      })
-      .catch((error: unknown) => {
-        errorMessage =
-          error instanceof Error
-            ? error.message
-            : 'Unable to open picture-in-picture';
-      });
+  function runMediaCommandInPage(command: MediaCommand): boolean {
+    const handle = (
+      window as unknown as { __fantabContentScript?: ContentScriptMediaHandle }
+    ).__fantabContentScript;
+    return handle?.runMediaCommand?.(command) ?? false;
   }
 
-  // Injected into the page's main world. Invokes the captured MediaSession
-  // handler for the action (so the site runs its own next/previous/play/pause
-  // logic), falling back to toggling the primary media element for play/pause.
-  // Must stay self-contained — it's serialized and run in the page.
-  function invokeMediaActionInPage(
-    action: 'nexttrack' | 'previoustrack' | 'play' | 'pause',
-  ): void {
-    try {
-      const bridge = (
-        window as unknown as {
-          __fantabMedia?: { invoke?: (action: string) => boolean };
-        }
-      ).__fantabMedia;
-      if (bridge?.invoke && bridge.invoke(action)) return;
-
-      if (action !== 'play' && action !== 'pause') return;
-
-      const media = [
-        ...Array.from(document.querySelectorAll('video')),
-        ...Array.from(document.querySelectorAll('audio')),
-      ] as HTMLMediaElement[];
-      const ready = media.filter((el) => el.readyState >= 2);
-      const playing = ready.filter((el) => !el.paused && !el.ended);
-      const target = (playing.length > 0 ? playing : ready).sort((a, b) => {
-        const areaOf = (el: HTMLMediaElement) => {
-          const rect = el.getBoundingClientRect();
-          return rect.width * rect.height;
-        };
-        return areaOf(b) - areaOf(a);
-      })[0];
-      if (!target) return;
-      if (action === 'play') void target.play().catch(() => {});
-      else target.pause();
-    } catch (error) {
-      console.warn('[fantab] media action failed', error);
-    }
+  function setMediaVolumeInPage(volume: number, muted: boolean): boolean {
+    const handle = (
+      window as unknown as { __fantabContentScript?: ContentScriptMediaHandle }
+    ).__fantabContentScript;
+    return handle?.setMediaVolume?.(volume, muted) ?? false;
   }
 
-  // Injected into the page's main world. Applies volume/mute to every media
-  // element (rarely more than one plays at once). Must stay self-contained.
-  function setMediaVolumeInPage(volume: number, muted: boolean): void {
-    try {
-      const clamped = Math.min(1, Math.max(0, volume));
-      const media = [
-        ...Array.from(document.querySelectorAll('video')),
-        ...Array.from(document.querySelectorAll('audio')),
-      ] as HTMLMediaElement[];
-      for (const el of media) {
-        el.volume = clamped;
-        el.muted = muted;
-      }
-    } catch (error) {
-      console.warn('[fantab] volume change failed', error);
-    }
-  }
-
-  function runInActiveMedia<Args extends unknown[]>(
-    func: (...args: Args) => void,
+  // Top frame only: that's where media is detected, and it keeps a promo video
+  // in another frame from racing for the single PiP slot.
+  function runInTab<Args extends unknown[]>(
+    tabId: number,
+    func: (...args: Args) => unknown,
     args: Args,
+    failureMessage: string,
   ): void {
-    const tabId = panelState.activeMedia?.tabId;
-    if (typeof tabId !== 'number') return;
-
     chrome.scripting
-      .executeScript({ target: { tabId }, world: 'MAIN', func, args })
+      .executeScript({ target: { tabId }, func, args })
       .catch((error: unknown) => {
-        errorMessage =
-          error instanceof Error ? error.message : 'Unable to control media';
+        errorMessage = error instanceof Error ? error.message : failureMessage;
       });
+  }
+
+  function togglePictureInPicture(tabId: number): void {
+    // Inject synchronously from the click; routing through the background
+    // would drop the user activation requestPictureInPicture() requires.
+    runInTab(
+      tabId,
+      requestPictureInPictureInPage,
+      [],
+      'Unable to open picture-in-picture',
+    );
+  }
+
+  function runMediaCommand(tabId: number, command: MediaCommand): void {
+    runInTab(tabId, runMediaCommandInPage, [command], 'Unable to control media');
+  }
+
+  function toggleTabPlayback(tabId: number, playing: boolean): void {
+    runMediaCommand(tabId, playing ? 'pause' : 'play');
   }
 
   function toggleMediaPlayback(): void {
-    runInActiveMedia(invokeMediaActionInPage, [
-      panelState.activeMedia?.isPlaying ? 'pause' : 'play',
-    ]);
+    const media = panelState.activeMedia;
+    if (media) toggleTabPlayback(media.tabId, media.isPlaying);
   }
 
   function mediaNext(): void {
-    runInActiveMedia(invokeMediaActionInPage, ['nexttrack']);
+    const tabId = panelState.activeMedia?.tabId;
+    if (typeof tabId === 'number') runMediaCommand(tabId, 'nexttrack');
   }
 
   function mediaPrev(): void {
-    runInActiveMedia(invokeMediaActionInPage, ['previoustrack']);
+    const tabId = panelState.activeMedia?.tabId;
+    if (typeof tabId === 'number') runMediaCommand(tabId, 'previoustrack');
   }
 
   // Volume drags fire rapidly; throttle the injections (with a trailing call so
@@ -480,13 +403,20 @@
     if (volumeThrottleTimer !== undefined) return;
 
     const flush = () => {
-      if (!pendingVolume) {
+      const tabId = panelState.activeMedia?.tabId;
+      if (!pendingVolume || typeof tabId !== 'number') {
+        pendingVolume = null;
         volumeThrottleTimer = undefined;
         return;
       }
       const { volume: nextVolume, muted: nextMuted } = pendingVolume;
       pendingVolume = null;
-      runInActiveMedia(setMediaVolumeInPage, [nextVolume, nextMuted]);
+      runInTab(
+        tabId,
+        setMediaVolumeInPage,
+        [nextVolume, nextMuted],
+        'Unable to control media',
+      );
       volumeThrottleTimer = setTimeout(flush, 100);
     };
     flush();
@@ -1198,6 +1128,17 @@
     }
 
     if (tab.isHomePin && tab.homePinId) {
+      if (tab.isOpen) {
+        items.push({
+          type: 'action',
+          label: tab.atHome ? 'Reload' : 'Return to home URL',
+          onSelect: () =>
+            void sendMessage({
+              action: 'GO_HOME',
+              payload: { homePinId: tab.homePinId! },
+            }),
+        });
+      }
       items.push({
         type: 'action',
         label: 'Edit URL…',
@@ -1610,14 +1551,10 @@
     onToggleMute={(tabId, muted) =>
       sendMessage({ action: 'SET_TAB_MUTED', payload: { tabId, muted } })}
     onTogglePiP={togglePictureInPicture}
+    onTogglePlayback={toggleTabPlayback}
     onRename={renameTab}
     onCreateHomePin={(tabId) =>
       sendMessage({ action: 'CREATE_HOME_PIN', payload: { tabId } })}
-    onRemoveHomePin={(homePinId) =>
-      sendMessage({
-        action: 'REMOVE_HOME_PIN',
-        payload: { homePinId },
-      })}
     onGoHome={(homePinId) =>
       sendMessage({ action: 'GO_HOME', payload: { homePinId } })}
     onContextMenu={openContextMenu}

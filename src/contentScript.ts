@@ -1,21 +1,31 @@
 import {
-  isEligibleVideo,
+  hasPlayedAudibly,
+  rejectMediaReason,
   rejectVideoReason,
+  trustMediaSession,
+  type MediaCandidate,
   type VideoCandidate,
 } from './mediaEligibility';
 import type { MediaStateChangedMessage } from './messaging';
-import type { TabMediaState } from './types';
+import type { MediaCommand, TabMediaState } from './types';
 import type { VideoMirrorSignal } from './videoMirror';
 
 (() => {
   const CONTENT_SCRIPT_GLOBAL = '__fantabContentScript';
   const MEDIA_DEBUG_GLOBAL = '__fantabMediaDebug';
+  // The side panel reaches these through chrome.scripting.executeScript in this
+  // (isolated) world rather than by message, so the click's user activation
+  // carries into the page for play() and requestPictureInPicture(). See the
+  // *InPage helpers in src/sidepanel/App.svelte, which mirror this shape.
   interface ContentScriptHandle {
     teardown: () => void;
+    runMediaCommand: (command: MediaCommand) => boolean;
+    setMediaVolume: (volume: number, muted: boolean) => boolean;
+    pictureInPictureTarget: () => HTMLVideoElement | null;
   }
   const globalScope = window as typeof window & {
     [CONTENT_SCRIPT_GLOBAL]?: ContentScriptHandle;
-    [MEDIA_DEBUG_GLOBAL]?: () => VideoDiagnostic[];
+    [MEDIA_DEBUG_GLOBAL]?: () => MediaDiagnostic[];
   };
 
   // A prior instance can still be live on this page: orphaned after an
@@ -162,6 +172,14 @@ import type { VideoMirrorSignal } from './videoMirror';
     return (
       candidate.action === 'LINK_ROUTING_POLICY_UPDATED' &&
       isPolicy(candidate.payload)
+    );
+  }
+
+  function isMediaReportRequest(message: unknown): boolean {
+    return (
+      !!message &&
+      typeof message === 'object' &&
+      (message as { action?: unknown }).action === 'REQUEST_MEDIA_REPORT'
     );
   }
 
@@ -339,6 +357,11 @@ import type { VideoMirrorSignal } from './videoMirror';
 
   function handlePointerDown(event: PointerEvent): void {
     if (event.button !== 0) return;
+    lastPointerDown = {
+      x: event.clientX,
+      y: event.clientY,
+      at: performance.now(),
+    };
     if (!getAnchor(event.target)) return;
 
     void refreshPolicy();
@@ -372,10 +395,22 @@ import type { VideoMirrorSignal } from './videoMirror';
   // Chrome surfaces tab audio but not video or fine-grained playback state, so
   // we watch media events (they don't bubble, but reach the document in the
   // capture phase) and report a snapshot the side panel uses for the player bar
-  // and picture-in-picture. The media bridge (main world) relays the page's
-  // MediaSession capabilities and metadata, which we merge in here.
+  // and the rows' play/pause and picture-in-picture buttons. The media bridge
+  // (main world) relays the page's MediaSession capabilities and metadata, which
+  // we merge in here.
+  //
+  // Only media the user is consuming counts (rules in ./mediaEligibility). The
+  // two facts a snapshot can't show are latched here per element: whether it has
+  // been heard, and whether the user deliberately started it.
 
   const MEDIA_BRIDGE_CHANNEL = 'fantab-media-bridge';
+  // Mirror of COMMAND_CHANNEL in ./mediaBridge. Kept inline so the content
+  // script stays a self-contained bundle. Update both copies together.
+  const MEDIA_COMMAND_CHANNEL = 'fantab-media-command';
+  /** A play/(un)mute this soon after a click inside the element is the user's. */
+  const USER_GESTURE_WINDOW_MS = 1000;
+  /** Steady playback fires only timeupdate; re-evaluate at most this often. */
+  const PLAYBACK_RECHECK_MS = 2000;
 
   interface MediaBridgeSnapshot {
     hasSession: boolean;
@@ -390,7 +425,14 @@ import type { VideoMirrorSignal } from './videoMirror';
 
   let bridgeSnapshot: MediaBridgeSnapshot | null = null;
   let lastReportedMedia: string | null = null;
+  let lastMediaReportAt = 0;
   let mediaReportTimer: number | null = null;
+  let lastPointerDown: { x: number; y: number; at: number } | null = null;
+  /** What the panel's last pause stopped, so its play resumes the same media. */
+  let pausedByPanel: HTMLMediaElement[] = [];
+
+  const heardMedia = new WeakSet<HTMLMediaElement>();
+  const engagedMedia = new WeakSet<HTMLMediaElement>();
 
   function isPlayingVideoEl(video: HTMLVideoElement): boolean {
     return (
@@ -407,27 +449,72 @@ import type { VideoMirrorSignal } from './videoMirror';
     return !el.paused && !el.ended && el.readyState >= 2;
   }
 
-  function videoElements(): HTMLVideoElement[] {
-    return [...document.querySelectorAll('video')];
+  function mediaElements(): HTMLMediaElement[] {
+    return [...document.querySelectorAll<HTMLMediaElement>('video, audio')];
   }
 
-  function audioElements(): HTMLAudioElement[] {
-    return [...document.querySelectorAll('audio')];
+  function isPresentedByUser(el: HTMLMediaElement): boolean {
+    if (document.pictureInPictureElement === el) return true;
+    const fullscreen = document.fullscreenElement;
+    return !!fullscreen && (fullscreen === el || fullscreen.contains(el));
   }
 
-  // Snapshot a <video> for the eligibility rules in ./mediaEligibility, which
-  // filter out hover previews, decorative loops, and hidden or tiny players.
-  function describeVideo(video: HTMLVideoElement): VideoCandidate {
-    const rect = video.getBoundingClientRect();
-    const style = window.getComputedStyle(video);
-    const audioCounterSupported = 'webkitAudioDecodedByteCount' in video;
+  // A play or (un)mute right after a click inside the element's box is the user
+  // working its controls (or the site's overlay on top of it), as opposed to
+  // autoplay or a hover preview starting on its own.
+  function noteUserGesture(el: HTMLMediaElement): void {
+    const pointer = lastPointerDown;
+    if (!pointer || performance.now() - pointer.at > USER_GESTURE_WINDOW_MS) {
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    if (
+      pointer.x >= rect.left &&
+      pointer.x <= rect.right &&
+      pointer.y >= rect.top &&
+      pointer.y <= rect.bottom
+    ) {
+      engagedMedia.add(el);
+    }
+  }
+
+  // Snapshot an element for ./mediaEligibility, updating its latches on the way.
+  function describeMedia(el: HTMLMediaElement): MediaCandidate {
+    const audioCounterSupported = 'webkitAudioDecodedByteCount' in el;
     const decodedAudioBytes = audioCounterSupported
-      ? ((video as HTMLVideoElement & { webkitAudioDecodedByteCount?: number })
+      ? ((el as HTMLMediaElement & { webkitAudioDecodedByteCount?: number })
           .webkitAudioDecodedByteCount ?? 0)
       : 0;
 
+    const candidate: MediaCandidate = {
+      readyState: el.readyState,
+      paused: el.paused,
+      ended: el.ended,
+      hasPlayed: el.played.length > 0,
+      duration: el.duration,
+      muted: el.muted,
+      volume: el.volume,
+      hasAudioBytes: decodedAudioBytes > 0,
+      audioCounterSupported,
+      encrypted: el.mediaKeys != null,
+      heard: false,
+      engaged: false,
+    };
+
+    if (hasPlayedAudibly(candidate)) heardMedia.add(el);
+    if (isPresentedByUser(el)) engagedMedia.add(el);
+    candidate.heard = heardMedia.has(el);
+    candidate.engaged = engagedMedia.has(el);
+    return candidate;
+  }
+
+  function describeVideo(video: HTMLVideoElement): VideoCandidate {
+    const rect = video.getBoundingClientRect();
+    const style = window.getComputedStyle(video);
+
     return {
-      readyState: video.readyState,
+      ...describeMedia(video),
       videoWidth: video.videoWidth,
       videoHeight: video.videoHeight,
       rectWidth: rect.width,
@@ -436,24 +523,54 @@ import type { VideoMirrorSignal } from './videoMirror';
         style.display === 'none' ||
         style.visibility === 'hidden' ||
         Number(style.opacity) === 0,
-      duration: video.duration,
-      muted: video.muted,
-      loop: video.loop,
-      disablePictureInPicture: video.disablePictureInPicture,
-      hasAudioBytes: decodedAudioBytes > 0,
-      audioCounterSupported,
     };
   }
 
-  function eligibleVideos(): HTMLVideoElement[] {
-    return videoElements().filter((video) =>
-      isEligibleVideo(describeVideo(video)),
-    );
+  interface PageMedia {
+    /** Elements the user is consuming (rejectMediaReason passed). */
+    significant: HTMLMediaElement[];
+    /** Of those, the videos that can be shown: picture-in-picture, the mirror. */
+    videos: HTMLVideoElement[];
+    /** Something played but was rejected as incidental (see trustMediaSession). */
+    hasPlayedIncidental: boolean;
+  }
+
+  function classifyPageMedia(): PageMedia {
+    const page: PageMedia = {
+      significant: [],
+      videos: [],
+      hasPlayedIncidental: false,
+    };
+
+    for (const el of mediaElements()) {
+      const isVideo = el instanceof HTMLVideoElement;
+      const candidate = isVideo ? describeVideo(el) : describeMedia(el);
+      const rejection = rejectMediaReason(candidate);
+      if (rejection === 'incidental') page.hasPlayedIncidental = true;
+      if (rejection) continue;
+
+      page.significant.push(el);
+      if (isVideo && rejectVideoReason(candidate as VideoCandidate) === null) {
+        page.videos.push(el);
+      }
+    }
+
+    return page;
+  }
+
+  // The bridge's session, when it counts as this page's media.
+  function trustedSession(page: PageMedia): MediaBridgeSnapshot | null {
+    const snapshot = bridgeSnapshot;
+    const trusted = trustMediaSession(snapshot, {
+      hasSignificant: page.significant.length > 0,
+      hasPlayedIncidental: page.hasPlayedIncidental,
+    });
+    return trusted ? snapshot : null;
   }
 
   // --- Detection diagnostics -------------------------------------------------
-  // Opt-in (Settings > "Log video detection"): dumps what every <video> on the
-  // page looks like and which rule rejected it, so the thresholds in
+  // Opt-in (Settings > "Log media detection"): dumps what every media element on
+  // the page looks like and which rule rejected it, so the thresholds in
   // ./mediaEligibility can be tuned against sites that misbehave. Logs land in
   // the page's own console. Also reachable as __fantabMediaDebug() once DevTools
   // is switched to the extension's isolated world.
@@ -462,38 +579,60 @@ import type { VideoMirrorSignal } from './videoMirror';
   // script stays a self-contained bundle. Update both copies together.
   const PREFERENCES_KEY = 'fantab_preferences';
 
-  interface VideoDiagnostic extends VideoCandidate {
+  type MediaDiagnostic = (MediaCandidate | VideoCandidate) & {
+    element: 'video' | 'audio';
     src: string;
-    paused: boolean;
-    ended: boolean;
-    rejectedBy: string;
-  }
+    /** rejectMediaReason: whether it counts as the tab's media. */
+    media: string;
+    /** rejectVideoReason: whether it can be shown (PiP, mirror). */
+    video: string;
+  };
 
   let mediaDebugEnabled = false;
+  let lastDiagnosticsKey = '';
 
-  function videoDiagnostics(): VideoDiagnostic[] {
-    return videoElements().map((video) => {
-      const candidate = describeVideo(video);
+  function mediaDiagnostics(): MediaDiagnostic[] {
+    return mediaElements().map((el) => {
+      const isVideo = el instanceof HTMLVideoElement;
+      const candidate = isVideo ? describeVideo(el) : describeMedia(el);
       return {
         ...candidate,
-        src: video.currentSrc || video.src || '(none)',
-        paused: video.paused,
-        ended: video.ended,
-        rejectedBy: rejectVideoReason(candidate) ?? 'eligible',
+        element: isVideo ? 'video' : 'audio',
+        src: el.currentSrc || el.src || '(none)',
+        media: rejectMediaReason(candidate) ?? 'counts',
+        video: isVideo
+          ? (rejectVideoReason(candidate as VideoCandidate) ?? 'eligible')
+          : '-',
       };
     });
   }
 
+  // Logs only when an element's verdict changes, since steady playback
+  // re-evaluates every couple of seconds.
   function logMediaDiagnostics(): void {
     if (!mediaDebugEnabled) return;
 
-    const rows = videoDiagnostics();
-    if (rows.length === 0) return;
+    const rows = mediaDiagnostics();
+    const session = bridgeSnapshot?.hasSession ? bridgeSnapshot : null;
+    const key = JSON.stringify([
+      rows.map((row) => [row.src, row.media, row.video]),
+      session,
+    ]);
+    if (key === lastDiagnosticsKey) return;
+    lastDiagnosticsKey = key;
+    if (rows.length === 0 && !session) return;
 
     console.groupCollapsed(
-      `[fantab] video detection (${rows.length} element${rows.length === 1 ? '' : 's'})`,
+      `[fantab] media detection (${rows.length} element${rows.length === 1 ? '' : 's'})`,
     );
-    console.table(rows);
+    if (rows.length > 0) console.table(rows);
+    if (session) {
+      const page = classifyPageMedia();
+      console.log(
+        `media session (${trustedSession(page) ? 'trusted' : 'ignored'})`,
+        session,
+      );
+    }
     console.groupEnd();
   }
 
@@ -501,6 +640,7 @@ import type { VideoMirrorSignal } from './videoMirror';
     mediaDebugEnabled =
       (stored as { mediaDebugLogging?: unknown } | undefined)
         ?.mediaDebugLogging === true;
+    lastDiagnosticsKey = '';
   }
 
   function handleStorageChanged(
@@ -534,47 +674,109 @@ import type { VideoMirrorSignal } from './videoMirror';
     return 0;
   }
 
-  // The element the volume/mute controls act on: the largest playing media
-  // element (videos rank above audio by rendered area), falling back to the
-  // largest ready one. Mirrors the picture-in-picture target selection.
-  function primaryMediaElement(elements: HTMLMediaElement[]): HTMLMediaElement | null {
+  // The element the volume readout reflects and "play" falls back to: the
+  // largest playing element (videos rank above audio by rendered area), else
+  // the largest ready one.
+  function primaryMediaElement(
+    elements: HTMLMediaElement[],
+  ): HTMLMediaElement | null {
     const ready = elements.filter((el) => el.readyState >= 2);
     const playing = ready.filter((el) => !el.paused && !el.ended);
-    const pool = playing.length > 0 ? playing : ready;
+    const pool =
+      playing.length > 0 ? playing : ready.length > 0 ? ready : elements;
+    if (pool.length === 0) return null;
+    return [...pool].sort((a, b) => renderedArea(b) - renderedArea(a))[0];
+  }
+
+  // The video picture-in-picture and the mirror act on: the largest eligible
+  // one, preferring what's playing.
+  function primaryVideoElement(): HTMLVideoElement | null {
+    const { videos } = classifyPageMedia();
+    const playing = videos.filter((video) => !video.paused && !video.ended);
+    const pool = playing.length > 0 ? playing : videos;
     if (pool.length === 0) return null;
     return [...pool].sort((a, b) => renderedArea(b) - renderedArea(a))[0];
   }
 
   function buildMediaState(): TabMediaState {
-    const videos = eligibleVideos();
-    const elements: HTMLMediaElement[] = [...videos, ...audioElements()];
-    const hasVideo = videos.length > 0;
-    const primary = primaryMediaElement(elements);
-    const snapshot = bridgeSnapshot;
+    const page = classifyPageMedia();
+    const session = trustedSession(page);
+    const primary = primaryMediaElement(page.significant);
 
-    const domPlaying = elements.some(isPlayingMediaEl);
-    const isPlaying = domPlaying || snapshot?.playbackState === 'playing';
-    const hasMedia = elements.length > 0 || !!snapshot?.hasSession;
+    const hasMedia = page.significant.length > 0 || session !== null;
+    const isPlaying =
+      page.significant.some(isPlayingMediaEl) ||
+      session?.playbackState === 'playing';
     const title =
-      (snapshot?.title ?? '').trim() || (hasMedia ? document.title : '');
+      (session?.title ?? '').trim() || (hasMedia ? document.title : '');
 
     return {
       hasMedia,
       isPlaying,
-      isPlayingVideo: videos.some(isPlayingVideoEl),
-      hasVideo,
-      canNext: !!snapshot?.canNext,
-      canPrev: !!snapshot?.canPrev,
+      hasVideo: page.videos.length > 0,
+      canNext: !!session?.canNext,
+      canPrev: !!session?.canPrev,
       volume: primary ? primary.volume : 1,
       muted: primary ? primary.muted : false,
       title,
-      artist: (snapshot?.artist ?? '').trim(),
+      artist: (session?.artist ?? '').trim(),
     };
+  }
+
+  // Run a transport action from the side panel. The site's own MediaSession
+  // handler wins (it knows its playlist and keeps its UI in sync); otherwise
+  // play/pause drive the elements directly. Returns whether anything was tried.
+  function runMediaCommand(command: MediaCommand): boolean {
+    const page = classifyPageMedia();
+    const session = trustedSession(page);
+    const sessionHandles = {
+      play: session?.canPlay,
+      pause: session?.canPause,
+      nexttrack: session?.canNext,
+      previoustrack: session?.canPrev,
+    }[command];
+
+    if (sessionHandles) {
+      window.postMessage({ source: MEDIA_COMMAND_CHANNEL, action: command }, '*');
+      return true;
+    }
+
+    if (command === 'pause') {
+      pausedByPanel = page.significant.filter((el) => !el.paused && !el.ended);
+      for (const el of pausedByPanel) el.pause();
+      return pausedByPanel.length > 0;
+    }
+
+    if (command === 'play') {
+      const resumable = pausedByPanel.filter(
+        (el) => el.paused && page.significant.includes(el),
+      );
+      const primary = primaryMediaElement(page.significant);
+      const targets = resumable.length > 0 ? resumable : primary ? [primary] : [];
+      pausedByPanel = [];
+      for (const el of targets) void el.play().catch(() => {});
+      return targets.length > 0;
+    }
+
+    return false;
+  }
+
+  // Volume/mute from the player bar, applied only to the media that counts:
+  // unmuting a hover preview or background loop would make it audible.
+  function setMediaVolume(volume: number, muted: boolean): boolean {
+    const { significant } = classifyPageMedia();
+    const clamped = Math.min(1, Math.max(0, volume));
+    for (const el of significant) {
+      el.volume = clamped;
+      el.muted = muted;
+    }
+    return significant.length > 0;
   }
 
   function reportMediaState(): void {
     if (!extensionContextValid()) return;
 
+    lastMediaReportAt = performance.now();
     logMediaDiagnostics();
 
     const state = buildMediaState();
@@ -602,7 +804,19 @@ import type { VideoMirrorSignal } from './videoMirror';
     }, 250);
   }
 
-  function handleMediaEvent(): void {
+  function handleMediaEvent(event: Event): void {
+    const target = event.target;
+    if (target instanceof HTMLMediaElement) {
+      if (event.type === 'play' || event.type === 'volumechange') {
+        noteUserGesture(target);
+      }
+      if (
+        event.type === 'timeupdate' &&
+        performance.now() - lastMediaReportAt < PLAYBACK_RECHECK_MS
+      ) {
+        return;
+      }
+    }
     scheduleMediaReport();
   }
 
@@ -626,8 +840,12 @@ import type { VideoMirrorSignal } from './videoMirror';
     'loadeddata',
     'loadedmetadata',
     'volumechange',
+    'timeupdate',
     'enterpictureinpicture',
     'leavepictureinpicture',
+    // Not a media event, but it bubbles to the document and latches the
+    // fullscreened player as engaged.
+    'fullscreenchange',
   ];
 
   // --- Video mirror (WebRTC producer) ----------------------------------------
@@ -669,14 +887,6 @@ import type { VideoMirrorSignal } from './videoMirror';
       }
       mirrorPort = null;
     }
-  }
-
-  function primaryVideoElement(): HTMLVideoElement | null {
-    const videos = eligibleVideos();
-    const playing = videos.filter((video) => !video.paused && !video.ended);
-    const pool = playing.length > 0 ? playing : videos;
-    if (pool.length === 0) return null;
-    return [...pool].sort((a, b) => renderedArea(b) - renderedArea(a))[0];
   }
 
   function postMirror(signal: VideoMirrorSignal): void {
@@ -844,6 +1054,14 @@ import type { VideoMirrorSignal } from './videoMirror';
       return false;
     }
 
+    // The background dropped this tab's media record (its URL changed) and
+    // needs the current state, even if it matches what was last sent.
+    if (isMediaReportRequest(message)) {
+      lastReportedMedia = null;
+      scheduleMediaReport();
+      return false;
+    }
+
     if (isCopyTextToClipboardMessage(message)) {
       copyText(message.payload.text)
         .then(() => {
@@ -878,8 +1096,13 @@ import type { VideoMirrorSignal } from './videoMirror';
     document.addEventListener(type, handleMediaEvent, true);
   }
 
-  globalScope[CONTENT_SCRIPT_GLOBAL] = { teardown };
-  globalScope[MEDIA_DEBUG_GLOBAL] = videoDiagnostics;
+  globalScope[CONTENT_SCRIPT_GLOBAL] = {
+    teardown,
+    runMediaCommand,
+    setMediaVolume,
+    pictureInPictureTarget: primaryVideoElement,
+  };
+  globalScope[MEDIA_DEBUG_GLOBAL] = mediaDiagnostics;
 
   void refreshPolicy();
   refreshDebugPreference();

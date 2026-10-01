@@ -2,6 +2,7 @@ import type {
   ActiveMedia,
   FantabGroup,
   HomePin,
+  MediaPlayback,
   PanelGroup,
   PanelState,
   PanelTab,
@@ -16,8 +17,10 @@ export interface BuildPanelStateInput {
   windowId: number | null;
   /** Extension placeholder page URL; matching tabs are hidden from the panel. */
   blankUrl?: string;
-  /** Tab ids the content script has reported as currently playing video. */
-  playingVideoTabIds?: ReadonlySet<number>;
+  /** Tab ids the content script has reported as having a video. */
+  videoTabIds?: ReadonlySet<number>;
+  /** Playback of each tab with media the user is consuming. */
+  mediaPlaybackByTabId?: ReadonlyMap<number, MediaPlayback>;
   /** The media source the player bar controls, resolved by the background. */
   activeMedia?: ActiveMedia | null;
 }
@@ -42,7 +45,8 @@ function createOpenPanelTab(
   tab: chrome.tabs.Tab,
   state: StoredStateV8,
   homePin: HomePin | undefined,
-  playingVideoTabIds: ReadonlySet<number>,
+  videoTabIds: ReadonlySet<number>,
+  mediaPlaybackByTabId: ReadonlyMap<number, MediaPlayback>,
 ): PanelTab {
   const id = tabId(tab);
   const url = tabUrl(tab);
@@ -72,7 +76,8 @@ function createOpenPanelTab(
     isActive: !!tab.active,
     isAudible: !!tab.audible,
     isMuted: !!tab.mutedInfo?.muted,
-    isPlayingVideo: playingVideoTabIds.has(id),
+    hasVideo: videoTabIds.has(id),
+    mediaPlayback: mediaPlaybackByTabId.get(id) ?? null,
     isNativePinned: !!tab.pinned,
     isHomePin: !!homePin,
     isOpen: true,
@@ -101,7 +106,8 @@ function createClosedHomePinPanelTab(homePin: HomePin): PanelTab {
     isActive: false,
     isAudible: false,
     isMuted: false,
-    isPlayingVideo: false,
+    hasVideo: false,
+    mediaPlayback: null,
     isNativePinned: false,
     isHomePin: true,
     isOpen: false,
@@ -116,7 +122,8 @@ export function buildPanelState({
   state,
   windowId,
   blankUrl,
-  playingVideoTabIds = new Set<number>(),
+  videoTabIds = new Set<number>(),
+  mediaPlaybackByTabId = new Map<number, MediaPlayback>(),
   activeMedia = null,
 }: BuildPanelStateInput): PanelState {
   const activeSpace = getActiveSpace(state, windowId);
@@ -142,7 +149,13 @@ export function buildPanelState({
     const homePin = homePinsByTabId.get(id);
     if (!homePin && state.tabSpaces[String(id)] !== activeSpace.id) continue;
 
-    const panelTab = createOpenPanelTab(tab, state, homePin, playingVideoTabIds);
+    const panelTab = createOpenPanelTab(
+      tab,
+      state,
+      homePin,
+      videoTabIds,
+      mediaPlaybackByTabId,
+    );
 
     if (homePin) {
       openHomePinIds.add(homePin.id);
